@@ -1,0 +1,5 @@
+CONFIG_IDF_TARGET="esp32c6"
+# Консоль/вывод -> нативный USB (USB-Serial-JTAG). stdout идёт туда (рабочий путь).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y

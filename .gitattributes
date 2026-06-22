@@ -1,0 +1,22 @@
+# Normalize source and documentation files across Windows and Unix.
+* text=auto
+
+*.c text eol=lf
+*.h text eol=lf
+*.kt text eol=lf
+*.kts text eol=lf
+*.md text eol=lf
+*.pro text eol=lf
+*.properties text eol=lf
+*.ps1 text eol=crlf
+*.py text eol=lf
+*.txt text eol=lf
+*.xml text eol=lf
+
+# Vosk acoustic and graph data must never be line-normalized or diffed.
+*.dubm binary
+*.fst binary
+*.ie binary
+*.mat binary
+*.mdl binary
+android_voice_assistant/app/src/main/assets/model-ru/ivector/global_cmvn.stats binary

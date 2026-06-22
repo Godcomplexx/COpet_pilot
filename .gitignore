@@ -1,0 +1,83 @@
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editors and local agent state
+.idea/
+.vscode/
+*.iml
+.claude/
+.agents/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+dist/
+site/
+
+# Python model and package caches
+.cache/
+
+# Android / Gradle
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.externalNativeBuild/
+.cxx/
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.jks
+*.keystore
+
+# Temporary Android model downloads
+android_voice_assistant/.download/
+
+# Local LLM files: select these on the device instead of committing them
+*.task
+*.litertlm
+*.tflite
+
+# ESP-IDF generated files
+esp_serial_mic_c6/build/
+esp_serial_mic_c6/managed_components/
+esp_serial_mic_c6/sdkconfig.old
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.*
+
+# Audio captures, logs, and diagnostics
+*.wav
+*.pcm
+*.raw
+*.log
+esp_serial_log.txt
+_usb_asr.txt
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
