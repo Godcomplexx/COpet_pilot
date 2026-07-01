@@ -55,6 +55,10 @@ android_voice_assistant/.download/
 *.tflite
 
 # ESP-IDF generated files
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
 esp_serial_mic_c6/build/
 esp_serial_mic_c6/managed_components/
 esp_serial_mic_c6/sdkconfig.old
