@@ -17,10 +17,14 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "drivers/audio_loopback.h"
+#include "drivers/copet_ble.h"
+#include "drivers/touch_button.h"
+
 /*
  * CoPet hardware test for the ESP32-WROOM-32 DevKit shown in the photos.
  *
- * ST7789: SCK=18, MOSI=23, DC=16, RST=17, CS is not present.
+ * ST7789: SCK=18, MOSI=5, DC=16, RST=17, CS is not present.
  * SHT3x:  SDA=21, SCL=22.
  * Encoder: A=32, B=33, COM=GND.
  */
@@ -31,32 +35,74 @@ enum {
     LCD_WIDTH = 240,
     LCD_HEIGHT = 240,
     LCD_PIN_SCLK = 18,
-    LCD_PIN_MOSI = 23,
+    LCD_PIN_MOSI = 5,
     LCD_PIN_DC = 16,
     LCD_PIN_RST = 17,
     I2C_PIN_SDA = 21,
     I2C_PIN_SCL = 22,
     ENCODER_PIN_A = 32,
     ENCODER_PIN_B = 33,
+    ENCODER_DEBOUNCE_US = 12000,
+    LCD_TRANSFER_ROWS = 16,
+};
+
+typedef enum {
+    COPET_MODE_BOOT,
+    COPET_MODE_MENU,
+    COPET_MODE_DESK,
+    COPET_MODE_FOCUS,
+    COPET_MODE_PHONE_BRIDGE,
+    COPET_MODE_MINI_TV,
+    COPET_MODE_OUTDOOR,
+    COPET_MODE_SETTINGS,
+    COPET_MODE_SLEEP,
+    COPET_MODE_AUDIO_TEST,
+} copet_mode_t;
+
+typedef enum {
+    FOCUS_TIMER_READY,
+    FOCUS_TIMER_RUNNING,
+    FOCUS_TIMER_PAUSED,
+} focus_timer_state_t;
+
+typedef struct {
+    const char *label;
+    copet_mode_t mode;
+} menu_item_t;
+
+static const menu_item_t MENU_ITEMS[] = {
+    {"DESK MODE", COPET_MODE_DESK},
+    {"FOCUS MODE", COPET_MODE_FOCUS},
+    {"PHONE BRIDGE", COPET_MODE_PHONE_BRIDGE},
+    {"AUDIO LOOPBACK", COPET_MODE_AUDIO_TEST},
+    {"INPUT TEST", COPET_MODE_SETTINGS},
+};
+
+enum {
+    FOCUS_WORK_SECONDS = 25 * 60,
+    FOCUS_BREAK_SECONDS = 5 * 60,
 };
 
 #define LCD_HOST SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ (10 * 1000 * 1000)
 #define LCD_X_GAP 0
-#define LCD_Y_GAP 80
+#define LCD_Y_GAP 0
 
 #define SHT31_ADDR_PRIMARY 0x44
 #define SHT31_ADDR_SECONDARY 0x45
 
 static esp_lcd_panel_handle_t s_panel;
+static esp_lcd_panel_io_handle_t s_panel_io;
 static SemaphoreHandle_t s_lcd_done;
-static uint16_t *s_framebuffer;
+typedef uint8_t screen_color_t;
+
+static screen_color_t *s_framebuffer;
+static uint16_t *s_lcd_transfer_buffer;
 static i2c_master_bus_handle_t s_i2c_bus;
 static i2c_master_dev_handle_t s_sht31_primary;
 static i2c_master_dev_handle_t s_sht31_secondary;
 
 static volatile int32_t s_encoder_position;
-static volatile int8_t s_encoder_direction;
 static volatile uint8_t s_encoder_ab;
 
 typedef struct {
@@ -85,19 +131,35 @@ static const glyph_t FONT[] = {
     {'6', {3, 4, 7, 5, 7}}, {'7', {7, 1, 2, 2, 2}},
     {'8', {7, 5, 7, 5, 7}}, {'9', {7, 5, 7, 1, 6}},
     {'-', {0, 0, 7, 0, 0}}, {'.', {0, 0, 0, 0, 2}},
-    {':', {0, 2, 0, 2, 0}}, {' ', {0, 0, 0, 0, 0}},
+    {':', {0, 2, 0, 2, 0}}, {'>', {4, 2, 1, 2, 4}},
+    {' ', {0, 0, 0, 0, 0}},
 };
 
-static uint16_t rgb565(uint8_t red, uint8_t green, uint8_t blue)
+static screen_color_t rgb332(uint8_t red, uint8_t green, uint8_t blue)
 {
-    const uint16_t color =
-        ((red & 0xF8U) << 8) | ((green & 0xFCU) << 3) | (blue >> 3);
-
-    /* The SPI panel consumes RGB565 most-significant byte first. */
-    return (uint16_t)((color << 8) | (color >> 8));
+    return (screen_color_t)((red & 0xE0U) |
+                            ((green & 0xE0U) >> 3) |
+                            (blue >> 6));
 }
 
-static void fill_rect(int x, int y, int width, int height, uint16_t color)
+static uint16_t rgb332_to_panel_rgb565(screen_color_t color)
+{
+    const uint16_t red_3 = (color >> 5) & 0x07U;
+    const uint16_t green_3 = (color >> 2) & 0x07U;
+    const uint16_t blue_2 = color & 0x03U;
+    const uint16_t red_5 = (red_3 << 2) | (red_3 >> 1);
+    const uint16_t green_6 = (green_3 << 3) | green_3;
+    const uint16_t blue_5 =
+        (blue_2 << 3) | (blue_2 << 1) | (blue_2 >> 1);
+    const uint16_t color_565 =
+        (red_5 << 11) | (green_6 << 5) | blue_5;
+
+    /* The SPI panel consumes RGB565 most-significant byte first. */
+    return (uint16_t)((color_565 << 8) | (color_565 >> 8));
+}
+
+static void fill_rect(int x, int y, int width, int height,
+                      screen_color_t color)
 {
     if (x < 0) {
         width += x;
@@ -118,7 +180,8 @@ static void fill_rect(int x, int y, int width, int height, uint16_t color)
     }
 
     for (int row = y; row < y + height; ++row) {
-        uint16_t *destination = &s_framebuffer[row * LCD_WIDTH + x];
+        screen_color_t *destination =
+            &s_framebuffer[row * LCD_WIDTH + x];
         for (int column = 0; column < width; ++column) {
             destination[column] = color;
         }
@@ -135,7 +198,8 @@ static const uint8_t *find_glyph(char character)
     return FONT[sizeof(FONT) / sizeof(FONT[0]) - 1].rows;
 }
 
-static void draw_text(int x, int y, const char *text, int scale, uint16_t color)
+static void draw_text(int x, int y, const char *text, int scale,
+                      screen_color_t color)
 {
     while (*text != '\0') {
         const uint8_t *rows = find_glyph(*text++);
@@ -164,6 +228,63 @@ static bool lcd_transfer_done(esp_lcd_panel_io_handle_t panel_io,
     return higher_priority_task_woken == pdTRUE;
 }
 
+static esp_err_t lcd_apply_gmt130_init(void)
+{
+    static const uint8_t madctl[] = {0x00};
+    static const uint8_t pixel_format[] = {0x55};
+    static const uint8_t porch[] = {0x0C, 0x0C, 0x00, 0x33, 0x33};
+    static const uint8_t gate_control[] = {0x35};
+    static const uint8_t vcom[] = {0x19};
+    static const uint8_t lcm_control[] = {0x2C};
+    static const uint8_t vdv_vrh_enable[] = {0x01};
+    static const uint8_t vrh[] = {0x12};
+    static const uint8_t vdv[] = {0x20};
+    static const uint8_t frame_rate[] = {0x0F};
+    static const uint8_t power_control[] = {0xA4, 0xA1};
+    static const uint8_t positive_gamma[] = {
+        0xD0, 0x04, 0x0D, 0x11, 0x13, 0x2B, 0x3F,
+        0x54, 0x4C, 0x18, 0x0D, 0x0B, 0x1F, 0x23,
+    };
+    static const uint8_t negative_gamma[] = {
+        0xD0, 0x04, 0x0C, 0x11, 0x13, 0x2C, 0x3F,
+        0x44, 0x51, 0x2F, 0x1F, 0x1F, 0x20, 0x23,
+    };
+
+#define GMT130_COMMAND(command, data)                                      \
+    ESP_RETURN_ON_ERROR(                                                   \
+        esp_lcd_panel_io_tx_param(s_panel_io, command, data, sizeof(data)), \
+        TAG, "GMT130 command 0x%02X failed", command)
+
+    GMT130_COMMAND(0x36, madctl);
+    GMT130_COMMAND(0x3A, pixel_format);
+    GMT130_COMMAND(0xB2, porch);
+    GMT130_COMMAND(0xB7, gate_control);
+    GMT130_COMMAND(0xBB, vcom);
+    GMT130_COMMAND(0xC0, lcm_control);
+    GMT130_COMMAND(0xC2, vdv_vrh_enable);
+    GMT130_COMMAND(0xC3, vrh);
+    GMT130_COMMAND(0xC4, vdv);
+    GMT130_COMMAND(0xC6, frame_rate);
+    GMT130_COMMAND(0xD0, power_control);
+    GMT130_COMMAND(0xE0, positive_gamma);
+    GMT130_COMMAND(0xE1, negative_gamma);
+#undef GMT130_COMMAND
+
+    ESP_RETURN_ON_ERROR(
+        esp_lcd_panel_io_tx_param(s_panel_io, 0x21, NULL, 0),
+        TAG, "GMT130 inversion command failed");
+    ESP_RETURN_ON_ERROR(
+        esp_lcd_panel_io_tx_param(s_panel_io, 0x11, NULL, 0),
+        TAG, "GMT130 sleep-out command failed");
+    vTaskDelay(pdMS_TO_TICKS(120));
+    ESP_RETURN_ON_ERROR(
+        esp_lcd_panel_io_tx_param(s_panel_io, 0x29, NULL, 0),
+        TAG, "GMT130 display-on command failed");
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    return ESP_OK;
+}
+
 static esp_err_t lcd_init(void)
 {
     spi_bus_config_t bus_config = {
@@ -184,13 +305,12 @@ static esp_err_t lcd_init(void)
         .pclk_hz = LCD_PIXEL_CLOCK_HZ,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
-        .spi_mode = 2,
+        .spi_mode = 3,
         .trans_queue_depth = 1,
     };
-    esp_lcd_panel_io_handle_t panel_io = NULL;
     ESP_RETURN_ON_ERROR(
         esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST,
-                                 &io_config, &panel_io),
+                                 &io_config, &s_panel_io),
         TAG, "LCD panel IO initialization failed");
 
     s_lcd_done = xSemaphoreCreateBinary();
@@ -201,7 +321,8 @@ static esp_err_t lcd_init(void)
         .on_color_trans_done = lcd_transfer_done,
     };
     ESP_RETURN_ON_ERROR(
-        esp_lcd_panel_io_register_event_callbacks(panel_io, &callbacks, NULL),
+        esp_lcd_panel_io_register_event_callbacks(
+            s_panel_io, &callbacks, NULL),
         TAG, "LCD callback registration failed");
 
     esp_lcd_panel_dev_config_t panel_config = {
@@ -210,40 +331,64 @@ static esp_err_t lcd_init(void)
         .bits_per_pixel = 16,
     };
     ESP_RETURN_ON_ERROR(
-        esp_lcd_new_panel_st7789(panel_io, &panel_config, &s_panel),
+        esp_lcd_new_panel_st7789(s_panel_io, &panel_config, &s_panel),
         TAG, "ST7789 initialization failed");
 
     ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(s_panel), TAG, "LCD reset failed");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s_panel), TAG, "LCD init failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(s_panel, true),
-                        TAG, "LCD inversion setup failed");
+    ESP_RETURN_ON_ERROR(lcd_apply_gmt130_init(),
+                        TAG, "GMT130-specific initialization failed");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_set_gap(s_panel, LCD_X_GAP, LCD_Y_GAP),
                         TAG, "LCD gap setup failed");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true),
                         TAG, "LCD enable failed");
 
     s_framebuffer = heap_caps_malloc(
-        LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t),
-        MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+        LCD_WIDTH * LCD_HEIGHT * sizeof(screen_color_t),
+        MALLOC_CAP_8BIT);
     ESP_RETURN_ON_FALSE(s_framebuffer != NULL, ESP_ERR_NO_MEM, TAG,
                         "LCD framebuffer allocation failed");
 
+    s_lcd_transfer_buffer = heap_caps_malloc(
+        LCD_WIDTH * LCD_TRANSFER_ROWS * sizeof(uint16_t),
+        MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    ESP_RETURN_ON_FALSE(s_lcd_transfer_buffer != NULL, ESP_ERR_NO_MEM, TAG,
+                        "LCD transfer buffer allocation failed");
+
+    ESP_LOGI(TAG, "LCD buffers: framebuffer=%u bytes, DMA stripe=%u bytes",
+             LCD_WIDTH * LCD_HEIGHT * (unsigned)sizeof(screen_color_t),
+             LCD_WIDTH * LCD_TRANSFER_ROWS *
+                 (unsigned)sizeof(uint16_t));
     return ESP_OK;
 }
 
 static esp_err_t lcd_refresh(void)
 {
-    /* Remove a stale notification before starting the next transfer. */
-    (void)xSemaphoreTake(s_lcd_done, 0);
+    for (int y = 0; y < LCD_HEIGHT; y += LCD_TRANSFER_ROWS) {
+        const int rows =
+            y + LCD_TRANSFER_ROWS <= LCD_HEIGHT
+                ? LCD_TRANSFER_ROWS
+                : LCD_HEIGHT - y;
+        const int pixel_count = LCD_WIDTH * rows;
+        const int source_offset = y * LCD_WIDTH;
 
-    ESP_RETURN_ON_ERROR(
-        esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_WIDTH, LCD_HEIGHT,
-                                  s_framebuffer),
-        TAG, "LCD transfer failed");
+        for (int pixel = 0; pixel < pixel_count; ++pixel) {
+            s_lcd_transfer_buffer[pixel] =
+                rgb332_to_panel_rgb565(
+                    s_framebuffer[source_offset + pixel]);
+        }
 
-    ESP_RETURN_ON_FALSE(
-        xSemaphoreTake(s_lcd_done, pdMS_TO_TICKS(1000)) == pdTRUE,
-        ESP_ERR_TIMEOUT, TAG, "LCD transfer timeout");
+        /* Remove a stale notification before starting the next stripe. */
+        (void)xSemaphoreTake(s_lcd_done, 0);
+        ESP_RETURN_ON_ERROR(
+            esp_lcd_panel_draw_bitmap(
+                s_panel, 0, y, LCD_WIDTH, y + rows,
+                s_lcd_transfer_buffer),
+            TAG, "LCD stripe transfer failed");
+        ESP_RETURN_ON_FALSE(
+            xSemaphoreTake(s_lcd_done, pdMS_TO_TICKS(1000)) == pdTRUE,
+            ESP_ERR_TIMEOUT, TAG, "LCD stripe transfer timeout");
+    }
     return ESP_OK;
 }
 
@@ -251,12 +396,12 @@ static void lcd_color_test(void)
 {
     const struct {
         const char *name;
-        uint16_t color;
+        screen_color_t color;
     } colors[] = {
-        {"RED", rgb565(255, 0, 0)},
-        {"GREEN", rgb565(0, 255, 0)},
-        {"BLUE", rgb565(0, 0, 255)},
-        {"WHITE", rgb565(255, 255, 255)},
+        {"RED", rgb332(255, 0, 0)},
+        {"GREEN", rgb332(0, 255, 0)},
+        {"BLUE", rgb332(0, 0, 255)},
+        {"WHITE", rgb332(255, 255, 255)},
     };
 
     for (size_t i = 0; i < sizeof(colors) / sizeof(colors[0]); ++i) {
@@ -378,14 +523,14 @@ static void encoder_task(void *argument)
     (void)argument;
 
     /*
-     * Valid transitions for the Gray-code sequence:
-     * 00 -> 01 -> 11 -> 10 -> 00, or the reverse sequence.
-     * Contact bounce normally adds opposite transitions which cancel out.
+     * The tested three-contact mouse wheel has a three-state cycle:
+     * 10 -> 11 -> 01 -> 10. The reverse direction uses the opposite order.
+     * State 00 is not a detent and is ignored.
      */
     static const int8_t transition_table[16] = {
-        0, -1, 1, 0,
-        1, 0, 0, -1,
-        -1, 0, 0, 1,
+        0, 0, 0, 0,
+        0, 0, 1, -1,
+        0, -1, 0, 1,
         0, 1, -1, 0,
     };
 
@@ -399,96 +544,337 @@ static void encoder_task(void *argument)
     };
     ESP_ERROR_CHECK(gpio_config(&config));
 
-    uint8_t previous =
+    uint8_t raw_state =
         ((uint8_t)gpio_get_level(ENCODER_PIN_A) << 1) |
         (uint8_t)gpio_get_level(ENCODER_PIN_B);
-    s_encoder_ab = previous;
+    uint8_t stable_state = raw_state;
+    int64_t raw_changed_us = esp_timer_get_time();
+    s_encoder_ab = stable_state;
 
     while (true) {
-        const uint8_t current =
+        const int64_t now_us = esp_timer_get_time();
+        const uint8_t sampled_state =
             ((uint8_t)gpio_get_level(ENCODER_PIN_A) << 1) |
             (uint8_t)gpio_get_level(ENCODER_PIN_B);
 
-        if (current != previous) {
-            const int8_t movement =
-                transition_table[(previous << 2) | current];
-            s_encoder_ab = current;
+        if (sampled_state != raw_state) {
+            raw_state = sampled_state;
+            raw_changed_us = now_us;
+        }
 
-            if (movement != 0) {
-                s_encoder_position += movement;
-                s_encoder_direction = movement;
-                ESP_LOGI(TAG, "ENC %s, count=%ld, AB=%u%u",
-                         movement > 0 ? "RIGHT" : "LEFT",
+        if (raw_state != stable_state && raw_state != 0 &&
+            now_us - raw_changed_us >= ENCODER_DEBOUNCE_US) {
+            const int8_t logical_step =
+                transition_table[(stable_state << 2) | raw_state];
+            if (logical_step != 0) {
+                s_encoder_position += logical_step;
+                ESP_LOGI(TAG, "ENC STEP %s, count=%ld, AB=%u%u",
+                         logical_step > 0 ? "RIGHT" : "LEFT",
                          (long)s_encoder_position,
-                         (current >> 1) & 1U, current & 1U);
+                         (raw_state >> 1) & 1U, raw_state & 1U);
+            } else {
+                ESP_LOGW(TAG, "ENC unexpected transition %u%u -> %u%u",
+                         (stable_state >> 1) & 1U, stable_state & 1U,
+                         (raw_state >> 1) & 1U, raw_state & 1U);
             }
-            previous = current;
+            stable_state = raw_state;
+            s_encoder_ab = stable_state;
         }
 
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
-static void render_screen(bool sensor_ok,
-                          float temperature,
-                          float humidity,
-                          int32_t encoder_position,
-                          int8_t encoder_direction,
-                          uint8_t encoder_ab)
+static void render_menu(size_t selected_item)
 {
-    const uint16_t background = rgb565(8, 14, 24);
-    const uint16_t header = rgb565(20, 90, 150);
-    const uint16_t white = rgb565(245, 248, 250);
-    const uint16_t cyan = rgb565(70, 210, 230);
-    const uint16_t green = rgb565(60, 210, 120);
-    const uint16_t red = rgb565(235, 70, 70);
-    const uint16_t muted = rgb565(110, 130, 145);
+    const screen_color_t background = rgb332(8, 14, 24);
+    const screen_color_t header = rgb332(20, 90, 150);
+    const screen_color_t white = rgb332(245, 248, 250);
+    const screen_color_t cyan = rgb332(70, 210, 230);
+    const screen_color_t muted = rgb332(110, 130, 145);
 
     fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, background);
     fill_rect(0, 0, LCD_WIDTH, 36, header);
-    draw_text(16, 8, "COPET TEST", 4, white);
+    draw_text(16, 8, "COPET MENU", 4, white);
+
+    for (size_t index = 0;
+         index < sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
+         ++index) {
+        const int y = 46 + (int)index * 34;
+        if (index == selected_item) {
+            fill_rect(8, y - 5, 224, 25, rgb332(18, 70, 105));
+            draw_text(16, y, ">", 2, cyan);
+        }
+        draw_text(36, y, MENU_ITEMS[index].label, 2,
+                  index == selected_item ? white : muted);
+    }
+
+    draw_text(12, 218, "TURN AND TOUCH", 2, cyan);
+}
+
+static void render_desk(bool sensor_ok, float temperature, float humidity)
+{
+    const screen_color_t background = rgb332(8, 14, 24);
+    const screen_color_t header = rgb332(20, 90, 150);
+    const screen_color_t white = rgb332(245, 248, 250);
+    const screen_color_t cyan = rgb332(70, 210, 230);
+    const screen_color_t green = rgb332(60, 210, 120);
+    const screen_color_t red = rgb332(235, 70, 70);
+
+    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, background);
+    fill_rect(0, 0, LCD_WIDTH, 36, header);
+    draw_text(16, 8, "DESK MODE", 4, white);
 
     char line[20];
     if (sensor_ok) {
-        draw_text(12, 52, "SHT OK", 3, green);
-
+        draw_text(12, 58, "ROOM SENSOR OK", 2, green);
         snprintf(line, sizeof(line), "TEMP %.1F C", (double)temperature);
-        draw_text(12, 78, line, 3, white);
-
+        draw_text(12, 92, line, 3, white);
         snprintf(line, sizeof(line), "HUM %.1F", (double)humidity);
-        draw_text(12, 104, line, 3, cyan);
+        draw_text(12, 126, line, 3, cyan);
     } else {
-        draw_text(12, 52, "SHT ERROR", 3, red);
-        draw_text(12, 82, "CHECK 21 22", 3, white);
+        draw_text(12, 72, "SHT ERROR", 3, red);
+        draw_text(12, 108, "CHECK D21 D22", 2, white);
     }
+    draw_text(12, 202, "HOLD TOUCH BACK", 2, cyan);
+}
 
-    fill_rect(10, 134, 220, 2, muted);
+static void render_input_test(int32_t encoder_position,
+                              uint8_t encoder_ab,
+                              const char *touch_status)
+{
+    const screen_color_t background = rgb332(8, 14, 24);
+    const screen_color_t header = rgb332(20, 90, 150);
+    const screen_color_t white = rgb332(245, 248, 250);
+    const screen_color_t cyan = rgb332(70, 210, 230);
+    const screen_color_t green = rgb332(60, 210, 120);
 
+    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, background);
+    fill_rect(0, 0, LCD_WIDTH, 36, header);
+    draw_text(16, 8, "INPUT TEST", 4, white);
+
+    char line[20];
     snprintf(line, sizeof(line), "ENC %ld", (long)encoder_position);
-    draw_text(12, 150, line, 3, white);
-
+    draw_text(12, 64, line, 3, white);
     snprintf(line, sizeof(line), "AB %u%u",
              (encoder_ab >> 1) & 1U, encoder_ab & 1U);
-    draw_text(12, 176, line, 3, cyan);
+    draw_text(12, 98, line, 3, cyan);
+    draw_text(12, 140, touch_status, 3, green);
+    draw_text(12, 202, "HOLD TOUCH BACK", 2, cyan);
+}
 
-    const char *direction = "ROLL WHEEL";
-    if (encoder_direction > 0) {
-        direction = "RIGHT";
-    } else if (encoder_direction < 0) {
-        direction = "LEFT";
+static const char *focus_status(bool break_phase,
+                                focus_timer_state_t state)
+{
+    if (state == FOCUS_TIMER_RUNNING) {
+        return break_phase ? "BREAK RUN" : "WORK RUN";
     }
-    draw_text(12, 208, direction, 3,
-              encoder_direction == 0 ? muted : green);
+    if (state == FOCUS_TIMER_PAUSED) {
+        return break_phase ? "BREAK PAUSE" : "WORK PAUSE";
+    }
+    return break_phase ? "BREAK READY" : "WORK READY";
+}
+
+static void render_focus(uint32_t remaining_seconds,
+                         bool break_phase,
+                         focus_timer_state_t state,
+                         uint32_t sessions)
+{
+    const screen_color_t background = rgb332(8, 14, 24);
+    const screen_color_t header = rgb332(20, 90, 150);
+    const screen_color_t white = rgb332(245, 248, 250);
+    const screen_color_t cyan = rgb332(70, 210, 230);
+    const screen_color_t green = rgb332(60, 210, 120);
+
+    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, background);
+    fill_rect(0, 0, LCD_WIDTH, 36, header);
+    draw_text(16, 8, "FOCUS MODE", 4, white);
+    draw_text(12, 50, focus_status(break_phase, state), 3, green);
+
+    char line[20];
+    const uint32_t minutes = remaining_seconds / 60U;
+    const uint32_t seconds = remaining_seconds % 60U;
+    snprintf(line, sizeof(line), "%02lu:%02lu",
+             (unsigned long)minutes, (unsigned long)seconds);
+    draw_text(40, 88, line, 8, white);
+
+    snprintf(line, sizeof(line), "SESSIONS %lu",
+             (unsigned long)sessions);
+    draw_text(12, 148, line, 2, cyan);
+    draw_text(12, 178, "TOUCH START PAUSE", 2, white);
+    draw_text(12, 208, "HOLD BACK", 2, cyan);
+}
+
+static const char *ble_status_text(copet_ble_status_t status)
+{
+    switch (status) {
+    case COPET_BLE_STARTING:
+        return "BLE STARTING";
+    case COPET_BLE_ADVERTISING:
+        return "ADVERTISING";
+    case COPET_BLE_CONNECTED:
+        return "CONNECTED";
+    case COPET_BLE_ERROR:
+        return "BLE ERROR";
+    case COPET_BLE_OFF:
+    default:
+        return "BLE OFF";
+    }
+}
+
+static void draw_message_lines(const char *message,
+                               int x,
+                               int y,
+                               screen_color_t color)
+{
+    enum {
+        CHARACTERS_PER_LINE = 27,
+        LINE_COUNT = 2,
+    };
+
+    size_t offset = 0;
+    for (int row = 0; row < LINE_COUNT && message[offset] != '\0'; ++row) {
+        char line[CHARACTERS_PER_LINE + 1];
+        size_t length = 0;
+        while (length < CHARACTERS_PER_LINE &&
+               message[offset + length] != '\0') {
+            line[length] = message[offset + length];
+            ++length;
+        }
+        line[length] = '\0';
+        draw_text(x, y + row * 24, line, 2, color);
+        offset += length;
+    }
+}
+
+static void render_phone_bridge(copet_ble_status_t status,
+                                const char *received_message)
+{
+    const screen_color_t background = rgb332(8, 14, 24);
+    const screen_color_t header = rgb332(20, 90, 150);
+    const screen_color_t white = rgb332(245, 248, 250);
+    const screen_color_t cyan = rgb332(70, 210, 230);
+    const screen_color_t green = rgb332(60, 210, 120);
+    const screen_color_t red = rgb332(235, 70, 70);
+
+    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, background);
+    fill_rect(0, 0, LCD_WIDTH, 36, header);
+    draw_text(8, 8, "PHONE BRIDGE", 4, white);
+
+    draw_text(12, 52, ble_status_text(status), 3,
+              status == COPET_BLE_ERROR ? red : green);
+    draw_text(12, 86, "RX FFF1", 2, cyan);
+    draw_message_lines(received_message, 12, 112, white);
+    draw_text(12, 166, "SERVICE FFF0", 2, cyan);
+    draw_text(12, 188, "WRITE TEXT TO FFF1", 2, white);
+    draw_text(12, 208, "HOLD BACK", 2, cyan);
+}
+
+static const char *audio_status_text(audio_loopback_status_t status)
+{
+    switch (status) {
+    case AUDIO_LOOPBACK_STARTING:
+        return "STARTING";
+    case AUDIO_LOOPBACK_OUTPUT_TEST:
+        return "OUTPUT TEST";
+    case AUDIO_LOOPBACK_RUNNING:
+        return "LOOPBACK ON";
+    case AUDIO_LOOPBACK_ERROR:
+        return "AUDIO ERROR";
+    case AUDIO_LOOPBACK_OFF:
+    default:
+        return "AUDIO OFF";
+    }
+}
+
+static void render_audio_loopback(audio_loopback_status_t status,
+                                  uint8_t level)
+{
+    const screen_color_t background = rgb332(8, 14, 24);
+    const screen_color_t header = rgb332(20, 90, 150);
+    const screen_color_t white = rgb332(245, 248, 250);
+    const screen_color_t cyan = rgb332(70, 210, 230);
+    const screen_color_t green = rgb332(60, 210, 120);
+    const screen_color_t red = rgb332(235, 70, 70);
+    const screen_color_t muted = rgb332(45, 60, 72);
+
+    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, background);
+    fill_rect(0, 0, LCD_WIDTH, 36, header);
+    draw_text(16, 8, "AUDIO LOOP", 4, white);
+    draw_text(12, 54, audio_status_text(status), 3,
+              status == AUDIO_LOOPBACK_ERROR ? red : green);
+    draw_text(12, 92, "SPEAK TO MIC", 3, cyan);
+
+    char line[20];
+    snprintf(line, sizeof(line), "LEVEL %u", level);
+    draw_text(12, 128, line, 3, white);
+    fill_rect(12, 164, 216, 18, muted);
+    fill_rect(12, 164, (216 * level) / 100, 18, green);
+    draw_text(12, 208, "HOLD BACK", 2, cyan);
+}
+
+static void render_mode(copet_mode_t mode,
+                        size_t selected_item,
+                        bool sensor_ok,
+                        float temperature,
+                        float humidity,
+                        int32_t encoder_position,
+                        uint8_t encoder_ab,
+                        const char *touch_status,
+                        uint32_t focus_remaining_seconds,
+                        bool focus_break_phase,
+                        focus_timer_state_t focus_state,
+                        uint32_t focus_sessions,
+                        copet_ble_status_t ble_status,
+                        const char *ble_message,
+                        audio_loopback_status_t audio_status,
+                        uint8_t audio_level)
+{
+    switch (mode) {
+    case COPET_MODE_DESK:
+        render_desk(sensor_ok, temperature, humidity);
+        break;
+    case COPET_MODE_SETTINGS:
+        render_input_test(encoder_position, encoder_ab, touch_status);
+        break;
+    case COPET_MODE_FOCUS:
+        render_focus(focus_remaining_seconds, focus_break_phase,
+                     focus_state, focus_sessions);
+        break;
+    case COPET_MODE_PHONE_BRIDGE:
+        render_phone_bridge(ble_status, ble_message);
+        break;
+    case COPET_MODE_AUDIO_TEST:
+        render_audio_loopback(audio_status, audio_level);
+        break;
+    case COPET_MODE_MENU:
+    default:
+        render_menu(selected_item);
+        break;
+    }
 }
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "CoPet display + SHT3x + encoder test");
+    ESP_LOGI(TAG, "CoPet menu + sensors + BLE + audio loopback test");
     ESP_LOGI(TAG, "Board target: ESP32-WROOM-32");
 
     ESP_ERROR_CHECK(lcd_init());
     lcd_color_test();
     ESP_ERROR_CHECK(i2c_init());
+    ESP_ERROR_CHECK(touch_button_init());
+    const esp_err_t ble_init_result = copet_ble_init();
+    const bool ble_available = ble_init_result == ESP_OK;
+    if (!ble_available) {
+        ESP_LOGE(TAG, "Phone Bridge unavailable: %s",
+                 esp_err_to_name(ble_init_result));
+    }
+    const esp_err_t audio_init_result = audio_loopback_init();
+    const bool audio_available = audio_init_result == ESP_OK;
+    if (!audio_available) {
+        ESP_LOGE(TAG, "Audio loopback unavailable: %s",
+                 esp_err_to_name(audio_init_result));
+    }
 
     BaseType_t task_created =
         xTaskCreate(encoder_task, "encoder", 2048, NULL, 5, NULL);
@@ -501,10 +887,77 @@ void app_main(void)
     int64_t next_sensor_read_us = 0;
     int32_t displayed_encoder_position = INT32_MIN;
     uint8_t displayed_encoder_ab = UINT8_MAX;
+    const char *touch_status = "TOUCH READY";
+    copet_mode_t mode = COPET_MODE_MENU;
+    size_t selected_item = 0;
+    bool force_redraw = true;
+    uint32_t focus_remaining_seconds = FOCUS_WORK_SECONDS;
+    uint32_t focus_sessions = 0;
+    bool focus_break_phase = false;
+    focus_timer_state_t focus_state = FOCUS_TIMER_READY;
+    int64_t focus_last_tick_us = 0;
+    copet_ble_status_t displayed_ble_status = COPET_BLE_OFF;
+    char ble_message[65] = "NO MESSAGE";
+    int64_t next_audio_ui_us = 0;
+
+    ESP_LOGI(TAG, "Mode: MENU");
 
     while (true) {
         const int64_t now_us = esp_timer_get_time();
+        const int64_t now_ms = now_us / 1000;
         bool redraw = false;
+
+        const touch_button_event_t touch_event =
+            touch_button_poll(now_ms);
+        if (touch_event == TOUCH_BUTTON_EVENT_SHORT) {
+            ESP_LOGI(TAG, "TOUCH_SHORT");
+            touch_status = "TOUCH SHORT";
+            if (mode == COPET_MODE_MENU) {
+                mode = MENU_ITEMS[selected_item].mode;
+                ESP_LOGI(TAG, "Mode opened: %s",
+                         MENU_ITEMS[selected_item].label);
+                if (mode == COPET_MODE_PHONE_BRIDGE && ble_available) {
+                    const esp_err_t result = copet_ble_start();
+                    if (result != ESP_OK) {
+                        ESP_LOGE(TAG, "BLE advertising failed: %s",
+                                 esp_err_to_name(result));
+                    }
+                } else if (mode == COPET_MODE_AUDIO_TEST &&
+                           audio_available) {
+                    audio_loopback_start();
+                }
+            } else if (mode == COPET_MODE_FOCUS) {
+                if (focus_state == FOCUS_TIMER_RUNNING) {
+                    focus_state = FOCUS_TIMER_PAUSED;
+                    ESP_LOGI(TAG, "Focus timer paused at %lu seconds",
+                             (unsigned long)focus_remaining_seconds);
+                } else {
+                    focus_state = FOCUS_TIMER_RUNNING;
+                    focus_last_tick_us = now_us;
+                    ESP_LOGI(TAG, "Focus timer started: %s",
+                             focus_break_phase ? "BREAK" : "WORK");
+                }
+            }
+            force_redraw = true;
+        } else if (touch_event == TOUCH_BUTTON_EVENT_LONG) {
+            ESP_LOGI(TAG, "TOUCH_LONG");
+            touch_status = "TOUCH LONG";
+            if (mode != COPET_MODE_MENU) {
+                if (mode == COPET_MODE_PHONE_BRIDGE && ble_available) {
+                    copet_ble_stop();
+                }
+                if (mode == COPET_MODE_AUDIO_TEST && audio_available) {
+                    audio_loopback_stop();
+                }
+                if (mode == COPET_MODE_FOCUS &&
+                    focus_state == FOCUS_TIMER_RUNNING) {
+                    focus_state = FOCUS_TIMER_PAUSED;
+                }
+                mode = COPET_MODE_MENU;
+                ESP_LOGI(TAG, "Mode: MENU");
+            }
+            force_redraw = true;
+        }
 
         if (now_us >= next_sensor_read_us) {
             const esp_err_t result =
@@ -524,19 +977,96 @@ void app_main(void)
             redraw = true;
         }
 
+        if (mode == COPET_MODE_FOCUS &&
+            focus_state == FOCUS_TIMER_RUNNING) {
+            const uint32_t elapsed_seconds =
+                (uint32_t)((now_us - focus_last_tick_us) / 1000000);
+            if (elapsed_seconds > 0) {
+                focus_last_tick_us +=
+                    (int64_t)elapsed_seconds * 1000000;
+                if (elapsed_seconds >= focus_remaining_seconds) {
+                    if (!focus_break_phase) {
+                        ++focus_sessions;
+                        focus_break_phase = true;
+                        focus_remaining_seconds = FOCUS_BREAK_SECONDS;
+                        ESP_LOGI(TAG,
+                                 "Work complete; break ready, sessions=%lu",
+                                 (unsigned long)focus_sessions);
+                    } else {
+                        focus_break_phase = false;
+                        focus_remaining_seconds = FOCUS_WORK_SECONDS;
+                        ESP_LOGI(TAG, "Break complete; work ready");
+                    }
+                    focus_state = FOCUS_TIMER_READY;
+                } else {
+                    focus_remaining_seconds -= elapsed_seconds;
+                }
+                redraw = true;
+            }
+        }
+
+        const copet_ble_status_t ble_status =
+            ble_available ? copet_ble_get_status() : COPET_BLE_ERROR;
+        if (ble_status != displayed_ble_status) {
+            displayed_ble_status = ble_status;
+            if (mode == COPET_MODE_PHONE_BRIDGE) {
+                redraw = true;
+            }
+        }
+        if (copet_ble_take_message(ble_message, sizeof(ble_message))) {
+            ESP_LOGI(TAG, "Phone message displayed: %s", ble_message);
+            if (mode == COPET_MODE_PHONE_BRIDGE) {
+                redraw = true;
+            }
+        }
+
+        const audio_loopback_status_t audio_status =
+            audio_available ? audio_loopback_get_status()
+                            : AUDIO_LOOPBACK_ERROR;
+        const uint8_t audio_level =
+            audio_available ? audio_loopback_get_level() : 0;
+        if (mode == COPET_MODE_AUDIO_TEST &&
+            now_us >= next_audio_ui_us) {
+            next_audio_ui_us = now_us + 200000;
+            redraw = true;
+        }
+
         const int32_t encoder_position = s_encoder_position;
         const uint8_t encoder_ab = s_encoder_ab;
         if (encoder_position != displayed_encoder_position ||
             encoder_ab != displayed_encoder_ab) {
+            if (encoder_position != displayed_encoder_position &&
+                displayed_encoder_position != INT32_MIN &&
+                mode == COPET_MODE_MENU) {
+                const int32_t logical_steps =
+                    encoder_position - displayed_encoder_position;
+                const size_t item_count =
+                    sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
+                const int32_t wrapped =
+                    ((int32_t)selected_item + logical_steps) %
+                    (int32_t)item_count;
+                selected_item =
+                    (size_t)(wrapped < 0 ? wrapped + (int32_t)item_count
+                                        : wrapped);
+                ESP_LOGI(TAG, "Menu selected: %s",
+                         MENU_ITEMS[selected_item].label);
+                force_redraw = true;
+            }
             displayed_encoder_position = encoder_position;
             displayed_encoder_ab = encoder_ab;
-            redraw = true;
+            if (mode == COPET_MODE_SETTINGS) {
+                redraw = true;
+            }
         }
 
-        if (redraw) {
-            render_screen(sensor_ok, temperature, humidity,
-                          encoder_position, s_encoder_direction, encoder_ab);
+        if (redraw || force_redraw) {
+            render_mode(mode, selected_item, sensor_ok, temperature, humidity,
+                        encoder_position, encoder_ab, touch_status,
+                        focus_remaining_seconds, focus_break_phase,
+                        focus_state, focus_sessions, ble_status, ble_message,
+                        audio_status, audio_level);
             ESP_ERROR_CHECK(lcd_refresh());
+            force_redraw = false;
         }
 
         vTaskDelay(pdMS_TO_TICKS(20));

@@ -42,6 +42,10 @@ GPIO:
 
 ## Notes
 
+- The active ESP32 DevKit prototype uses the display, SHT31, three-contact
+  encoder, and TTP223. MPU6050 is deferred.
+- Audio loopback is available through MAX98357A and INMP441 on shared I2S
+  clocks. It is active only inside `AUDIO LOOPBACK`.
 - ST7789 is SPI, not I2C.
 - SHT31 and MPU6050 can share I2C.
 - GPS antenna alone is not enough; a GNSS receiver module is required.
