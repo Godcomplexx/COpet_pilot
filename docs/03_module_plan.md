@@ -4,14 +4,16 @@
 
 | Phase | Module | Learning target |
 |---:|---|---|
-| 1 | ESP32-S3 base | ESP-IDF, CMake, logging |
+| 1 | ESP32-WROOM-32 base | ESP-IDF, CMake, logging |
 | 2 | ST7789 display | SPI, display init, drawing |
 | 3 | input | GPIO, encoder, debounce |
 | 4 | SHT31/MPU6050 | I2C, sensor data |
 | 5 | audio | PWM/I2S, speaker amp |
-| 6 | SD/Mini TV | filesystem, buffering |
-| 7 | BLE | GATT, protocol design |
-| 8 | GPS | UART, NMEA, speed |
+| 6 | architecture refactor | state machine, events, module boundaries |
+| 7 | direct Wi-Fi | provisioning, reconnect, SNTP, HTTPS |
+| 8 | Online Assistant | bounded JSON, audio streaming, cloud API |
+| 9 | SD/Mini TV | filesystem, buffering |
+| later | GPS/Outdoor | UART, NMEA, speed |
 
 ## Rule
 

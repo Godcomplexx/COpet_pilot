@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="940" viewBox="0 0 1320 940">
+  <defs>
+    <style>
+      .page { fill: #eef2f3; }
+      .title { font: 700 30px 'Segoe UI', sans-serif; fill: #16212d; }
+      .subtitle { font: 16px 'Segoe UI', sans-serif; fill: #52616d; }
+      .panel-title { font: 700 18px 'Segoe UI', sans-serif; fill: #16212d; }
+      .note { font: 14px 'Segoe UI', sans-serif; fill: #52616d; }
+      .screen { fill: #08131f; stroke: #263746; stroke-width: 5; }
+      .header { fill: #145a96; }
+      .footer { fill: #0e2738; }
+      .ui { font: 700 13px Consolas, monospace; fill: #f5f8fa; letter-spacing: 0.5px; }
+      .ui-small { font: 700 10px Consolas, monospace; fill: #62d6ea; }
+      .ui-large { font: 700 34px Consolas, monospace; fill: #f5f8fa; }
+      .muted { fill: #7993a3; }
+      .cyan { fill: #62d6ea; }
+      .green { fill: #55d58d; }
+      .red { fill: #f06b6b; }
+      .line { fill: none; stroke: #f5f8fa; stroke-width: 5; stroke-linecap: round; }
+      .grid { stroke: #d5dfe3; stroke-width: 1; }
+    </style>
+    <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M 20 0 L 0 0 0 20" class="grid" fill="none"/>
+    </pattern>
+  </defs>
+
+  <rect width="1320" height="940" class="page"/>
+  <rect width="1320" height="940" fill="url(#grid)" opacity="0.55"/>
+  <text x="40" y="48" class="title">CoPet Pilot — экранный storyboard 240×240</text>
+  <text x="40" y="75" class="subtitle">Целевой UX: сначала персонаж, меню появляется только по действию пользователя</text>
+
+  <!-- 1 Boot -->
+  <g transform="translate(40 105)">
+    <text x="0" y="0" class="panel-title">1. BOOT</text>
+    <rect x="0" y="18" width="240" height="240" rx="10" class="screen"/>
+    <text x="58" y="86" class="ui" style="font-size:22px">COPET</text>
+    <circle cx="120" cy="125" r="34" fill="none" stroke="#62d6ea" stroke-width="5"/>
+    <circle cx="108" cy="120" r="4" class="cyan"/>
+    <circle cx="132" cy="120" r="4" class="cyan"/>
+    <path d="M107 140 Q120 149 133 140" fill="none" stroke="#62d6ea" stroke-width="4" stroke-linecap="round"/>
+    <rect x="40" y="186" width="160" height="9" rx="4" fill="#243746"/>
+    <rect x="40" y="186" width="116" height="9" rx="4" class="green"/>
+    <text x="56" y="222" class="ui-small">STARTING LOCAL SYSTEM</text>
+    <text x="0" y="286" class="note">Не ждёт Wi-Fi → сразу Desk</text>
+  </g>
+
+  <!-- 2 Desk -->
+  <g transform="translate(360 105)">
+    <text x="0" y="0" class="panel-title">2. DESK — домашний экран</text>
+    <rect x="0" y="18" width="240" height="240" rx="10" class="screen"/>
+    <rect x="0" y="18" width="240" height="30" rx="8" class="header"/>
+    <text x="12" y="38" class="ui-small">12:45</text>
+    <text x="198" y="38" class="ui-small">NET</text>
+    <ellipse cx="120" cy="128" rx="70" ry="58" fill="#0d2232" stroke="#62d6ea" stroke-width="3"/>
+    <ellipse cx="93" cy="120" rx="12" ry="18" fill="#f5f8fa"/>
+    <ellipse cx="147" cy="120" rx="12" ry="18" fill="#f5f8fa"/>
+    <circle cx="96" cy="126" r="5" fill="#08131f"/>
+    <circle cx="144" cy="126" r="5" fill="#08131f"/>
+    <path d="M97 157 Q120 172 143 157" class="line"/>
+    <text x="52" y="214" class="ui">24.1C   46%</text>
+    <text x="48" y="239" class="ui-small">TURN WHEEL FOR MENU</text>
+    <text x="0" y="286" class="note">Главное — лицо и состояние комнаты</text>
+  </g>
+
+  <!-- 3 Menu -->
+  <g transform="translate(680 105)">
+    <text x="0" y="0" class="panel-title">3. MENU</text>
+    <rect x="0" y="18" width="240" height="240" rx="10" class="screen"/>
+    <rect x="0" y="18" width="240" height="36" rx="8" class="header"/>
+    <text x="61" y="42" class="ui">COPET MENU</text>
+    <rect x="10" y="66" width="220" height="30" rx="5" fill="#164d70"/>
+    <text x="20" y="86" class="ui-small">&gt;</text>
+    <text x="44" y="86" class="ui">FOCUS</text>
+    <text x="44" y="119" class="ui muted">ASSISTANT</text>
+    <text x="44" y="152" class="ui muted">ANIMATION</text>
+    <text x="44" y="185" class="ui muted">MINI TV</text>
+    <text x="44" y="218" class="ui muted">SETTINGS</text>
+    <rect x="0" y="230" width="240" height="28" class="footer"/>
+    <text x="29" y="248" class="ui-small">TOUCH SELECT  HOLD HOME</text>
+    <text x="0" y="286" class="note">Колесо — выбор, touch — открыть</text>
+  </g>
+
+  <!-- 4 Focus -->
+  <g transform="translate(1000 105)">
+    <text x="0" y="0" class="panel-title">4. FOCUS</text>
+    <rect x="0" y="18" width="240" height="240" rx="10" class="screen"/>
+    <rect x="0" y="18" width="240" height="36" rx="8" class="header"/>
+    <text x="59" y="42" class="ui">FOCUS MODE</text>
+    <text x="75" y="83" class="ui green">WORK RUN</text>
+    <text x="46" y="137" class="ui-large">24:59</text>
+    <text x="70" y="174" class="ui-small">SESSIONS 0</text>
+    <rect x="20" y="194" width="200" height="8" rx="4" fill="#243746"/>
+    <rect x="20" y="194" width="116" height="8" rx="4" class="cyan"/>
+    <rect x="0" y="230" width="240" height="28" class="footer"/>
+    <text x="26" y="248" class="ui-small">TOUCH PAUSE  HOLD HOME</text>
+    <text x="0" y="286" class="note">Один крупный таймер, минимум текста</text>
+  </g>
+
+  <!-- 5 Assistant recording -->
+  <g transform="translate(40 520)">
+    <text x="0" y="0" class="panel-title">5. ASSISTANT — запись</text>
+    <rect x="0" y="18" width="240" height="240" rx="10" class="screen"/>
+    <rect x="0" y="18" width="240" height="36" rx="8" class="header"/>
+    <text x="57" y="42" class="ui">ASSISTANT</text>
+    <text x="65" y="85" class="ui cyan">LISTENING</text>
+    <circle cx="120" cy="132" r="37" fill="#15364a" stroke="#62d6ea" stroke-width="4"/>
+    <rect x="112" y="105" width="16" height="39" rx="8" fill="#f5f8fa"/>
+    <path d="M101 135 Q101 159 120 159 Q139 159 139 135" fill="none" stroke="#f5f8fa" stroke-width="5"/>
+    <line x1="120" y1="159" x2="120" y2="171" class="line"/>
+    <text x="108" y="199" class="ui">04</text>
+    <rect x="28" y="210" width="184" height="9" rx="4" fill="#243746"/>
+    <rect x="28" y="210" width="128" height="9" rx="4" class="green"/>
+    <rect x="0" y="230" width="240" height="28" class="footer"/>
+    <text x="25" y="248" class="ui-small">TOUCH STOP  HOLD HOME</text>
+    <text x="0" y="286" class="note">До 5 секунд, уровень микрофона</text>
+  </g>
+
+  <!-- 6 Assistant result -->
+  <g transform="translate(360 520)">
+    <text x="0" y="0" class="panel-title">6. ASSISTANT — ответ</text>
+    <rect x="0" y="18" width="240" height="240" rx="10" class="screen"/>
+    <rect x="0" y="18" width="240" height="36" rx="8" class="header"/>
+    <text x="14" y="41" class="ui-small">ASSISTANT</text>
+    <text x="199" y="41" class="ui-small">NET</text>
+    <rect x="14" y="70" width="212" height="124" rx="10" fill="#102b3f" stroke="#62d6ea" stroke-width="2"/>
+    <text x="29" y="98" class="ui">TODAY: 18C</text>
+    <text x="29" y="125" class="ui">RAIN POSSIBLE.</text>
+    <text x="29" y="152" class="ui">TAKE AN</text>
+    <text x="29" y="179" class="ui">UMBRELLA.</text>
+    <circle cx="199" cy="212" r="12" class="green"/>
+    <path d="M193 212 L198 217 L207 206" fill="none" stroke="#08131f" stroke-width="4" stroke-linecap="round"/>
+    <rect x="0" y="230" width="240" height="28" class="footer"/>
+    <text x="35" y="248" class="ui-small">TOUCH AGAIN  HOLD HOME</text>
+    <text x="0" y="286" class="note">Короткая карточка вместо веб-страницы</text>
+  </g>
+
+  <!-- 7 Settings -->
+  <g transform="translate(680 520)">
+    <text x="0" y="0" class="panel-title">7. SETTINGS</text>
+    <rect x="0" y="18" width="240" height="240" rx="10" class="screen"/>
+    <rect x="0" y="18" width="240" height="36" rx="8" class="header"/>
+    <text x="68" y="42" class="ui">SETTINGS</text>
+    <rect x="10" y="66" width="220" height="30" rx="5" fill="#164d70"/>
+    <text x="22" y="86" class="ui-small">&gt;</text>
+    <text x="44" y="86" class="ui">WI-FI SETUP</text>
+    <text x="44" y="119" class="ui muted">SOUND     ON</text>
+    <text x="44" y="152" class="ui muted">ROTATE    180</text>
+    <text x="44" y="185" class="ui muted">BRIGHT    80</text>
+    <text x="44" y="218" class="ui muted">ABOUT</text>
+    <rect x="0" y="230" width="240" height="28" class="footer"/>
+    <text x="29" y="248" class="ui-small">TOUCH SELECT  HOLD HOME</text>
+    <text x="0" y="286" class="note">Wi-Fi, звук, яркость, поворот 180°</text>
+  </g>
+
+  <!-- 8 Sleep -->
+  <g transform="translate(1000 520)">
+    <text x="0" y="0" class="panel-title">8. SLEEP</text>
+    <rect x="0" y="18" width="240" height="240" rx="10" fill="#010305" stroke="#263746" stroke-width="5"/>
+    <circle cx="120" cy="126" r="48" fill="#06101a"/>
+    <path d="M92 119 Q101 110 110 119" fill="none" stroke="#27485d" stroke-width="4" stroke-linecap="round"/>
+    <path d="M130 119 Q139 110 148 119" fill="none" stroke="#27485d" stroke-width="4" stroke-linecap="round"/>
+    <text x="85" y="192" class="ui-small" fill="#27485d">TOUCH WAKE</text>
+    <text x="0" y="286" class="note">Экран/подсветка выключены</text>
+  </g>
+
+  <rect x="40" y="868" width="1200" height="48" rx="10" fill="#dce8ec"/>
+  <text x="60" y="897" class="subtitle">Общее правило: LONG TOUCH = HOME → DESK. Сеть никогда не блокирует локальный интерфейс.</text>
+</svg>

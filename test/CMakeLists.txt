@@ -5,6 +5,16 @@ project(copet_ui C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+enable_testing()
+
+add_executable(
+    desk_mode_tests
+    desk_mode_test.c
+    ../main/modes/desk_mode.c
+)
+target_include_directories(desk_mode_tests PRIVATE ../main)
+add_test(NAME desk_mode_tests COMMAND desk_mode_tests)
+
 include(FetchContent)
 
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

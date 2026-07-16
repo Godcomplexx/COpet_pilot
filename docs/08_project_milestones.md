@@ -11,7 +11,7 @@ Done when:
 ## M1 — First boot
 
 Done when:
-- ESP32-S3 boots;
+- ESP32-WROOM-32 boots;
 - logs show state machine state;
 - project has component structure.
 
@@ -36,21 +36,38 @@ Done when:
 - focus complete sound plays;
 - volume/power behavior acceptable.
 
-## M5 — Mini TV
+## M5 — Firmware architecture
 
 Done when:
-- SD card files listed;
+- boot opens Desk Mode;
+- encoder opens Menu;
+- display/input/sensors/modes are separated from app_main;
+- state transitions have host tests.
+
+## M6 — Direct Wi-Fi
+
+Done when:
+- credentials are provisioned and saved;
+- reconnect does not block UI;
+- SNTP or weather HTTPS request succeeds;
+- offline behavior remains usable.
+
+## M7 — Online Assistant
+
+Done when:
+- preset text query reaches CoPet Cloud API;
+- compact result card is displayed;
+- errors/timeouts are visible and recoverable;
+- short INMP441 upload works after the text path is stable.
+
+## M8 — Mini TV
+
+Done when:
+- SD card files are listed;
 - one clip or image sequence plays;
 - sound plays without blocking UI.
 
-## M6 — Phone Bridge
-
-Done when:
-- phone connects via BLE;
-- phone sends weather JSON;
-- CoPet displays response.
-
-## M7 — Outdoor Pilot
+## Later — Outdoor Pilot
 
 Done when:
 - GPS fix detected;

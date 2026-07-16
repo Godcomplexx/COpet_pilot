@@ -3,8 +3,14 @@ idf_component_register(
         "app_main.c"
         "drivers/audio_loopback.c"
         "drivers/copet_ble.c"
+        "drivers/mpu6050.c"
         "drivers/touch_button.c"
+        "modes/desk_mode.c"
+        "ui/desk_ui.c"
+        "ui/pip_face_port.c"
     INCLUDE_DIRS "."
+    EMBED_FILES
+        "assets/copet_animation_2bpp.bin"
     REQUIRES
         bt
         esp_driver_gpio

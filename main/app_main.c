@@ -19,7 +19,10 @@
 
 #include "drivers/audio_loopback.h"
 #include "drivers/copet_ble.h"
+#include "drivers/mpu6050.h"
 #include "drivers/touch_button.h"
+#include "modes/desk_mode.h"
+#include "ui/desk_ui.h"
 
 /*
  * CoPet hardware test for the ESP32-WROOM-32 DevKit shown in the photos.
@@ -44,6 +47,11 @@ enum {
     ENCODER_PIN_B = 33,
     ENCODER_DEBOUNCE_US = 12000,
     LCD_TRANSFER_ROWS = 16,
+    ANIMATION_FRAME_COUNT = 7,
+    ANIMATION_FRAME_BYTES = LCD_WIDTH * LCD_HEIGHT / 4,
+    ANIMATION_FRAME_INTERVAL_US = 200000,
+    DESK_FRAME_INTERVAL_US = 125000,
+    MENU_TIMEOUT_US = 10000000,
 };
 
 typedef enum {
@@ -57,6 +65,8 @@ typedef enum {
     COPET_MODE_SETTINGS,
     COPET_MODE_SLEEP,
     COPET_MODE_AUDIO_TEST,
+    COPET_MODE_ANIMATION,
+    COPET_MODE_CREDITS,
 } copet_mode_t;
 
 typedef enum {
@@ -71,11 +81,12 @@ typedef struct {
 } menu_item_t;
 
 static const menu_item_t MENU_ITEMS[] = {
-    {"DESK MODE", COPET_MODE_DESK},
     {"FOCUS MODE", COPET_MODE_FOCUS},
     {"PHONE BRIDGE", COPET_MODE_PHONE_BRIDGE},
     {"AUDIO LOOPBACK", COPET_MODE_AUDIO_TEST},
+    {"ANIMATION", COPET_MODE_ANIMATION},
     {"INPUT TEST", COPET_MODE_SETTINGS},
+    {"CREDITS", COPET_MODE_CREDITS},
 };
 
 enum {
@@ -101,6 +112,11 @@ static uint16_t *s_lcd_transfer_buffer;
 static i2c_master_bus_handle_t s_i2c_bus;
 static i2c_master_dev_handle_t s_sht31_primary;
 static i2c_master_dev_handle_t s_sht31_secondary;
+
+extern const uint8_t s_animation_data_start[]
+    asm("_binary_copet_animation_2bpp_bin_start");
+extern const uint8_t s_animation_data_end[]
+    asm("_binary_copet_animation_2bpp_bin_end");
 
 static volatile int32_t s_encoder_position;
 static volatile uint8_t s_encoder_ab;
@@ -132,6 +148,8 @@ static const glyph_t FONT[] = {
     {'8', {7, 5, 7, 5, 7}}, {'9', {7, 5, 7, 1, 6}},
     {'-', {0, 0, 7, 0, 0}}, {'.', {0, 0, 0, 0, 2}},
     {':', {0, 2, 0, 2, 0}}, {'>', {4, 2, 1, 2, 4}},
+    {'/', {1, 1, 2, 4, 4}},
+    {'(', {1, 2, 2, 2, 1}}, {')', {4, 2, 2, 2, 4}},
     {' ', {0, 0, 0, 0, 0}},
 };
 
@@ -600,7 +618,7 @@ static void render_menu(size_t selected_item)
     for (size_t index = 0;
          index < sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
          ++index) {
-        const int y = 46 + (int)index * 34;
+        const int y = 44 + (int)index * 28;
         if (index == selected_item) {
             fill_rect(8, y - 5, 224, 25, rgb332(18, 70, 105));
             draw_text(16, y, ">", 2, cyan);
@@ -612,31 +630,10 @@ static void render_menu(size_t selected_item)
     draw_text(12, 218, "TURN AND TOUCH", 2, cyan);
 }
 
-static void render_desk(bool sensor_ok, float temperature, float humidity)
+static void render_desk(const desk_mode_t *desk)
 {
-    const screen_color_t background = rgb332(8, 14, 24);
-    const screen_color_t header = rgb332(20, 90, 150);
-    const screen_color_t white = rgb332(245, 248, 250);
-    const screen_color_t cyan = rgb332(70, 210, 230);
-    const screen_color_t green = rgb332(60, 210, 120);
-    const screen_color_t red = rgb332(235, 70, 70);
-
-    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, background);
-    fill_rect(0, 0, LCD_WIDTH, 36, header);
-    draw_text(16, 8, "DESK MODE", 4, white);
-
-    char line[20];
-    if (sensor_ok) {
-        draw_text(12, 58, "ROOM SENSOR OK", 2, green);
-        snprintf(line, sizeof(line), "TEMP %.1F C", (double)temperature);
-        draw_text(12, 92, line, 3, white);
-        snprintf(line, sizeof(line), "HUM %.1F", (double)humidity);
-        draw_text(12, 126, line, 3, cyan);
-    } else {
-        draw_text(12, 72, "SHT ERROR", 3, red);
-        draw_text(12, 108, "CHECK D21 D22", 2, white);
-    }
-    draw_text(12, 202, "HOLD TOUCH BACK", 2, cyan);
+    desk_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
+                   desk_mode_get_view(desk));
 }
 
 static void render_input_test(int32_t encoder_position,
@@ -813,11 +810,53 @@ static void render_audio_loopback(audio_loopback_status_t status,
     draw_text(12, 208, "HOLD BACK", 2, cyan);
 }
 
+static void render_animation(size_t frame_index)
+{
+    const screen_color_t shades[] = {
+        rgb332(0, 0, 0),
+        rgb332(95, 115, 130),
+        rgb332(190, 220, 235),
+        rgb332(255, 255, 255),
+    };
+    const uint8_t *frame =
+        s_animation_data_start + frame_index * ANIMATION_FRAME_BYTES;
+
+    for (size_t packed_index = 0;
+         packed_index < ANIMATION_FRAME_BYTES;
+         ++packed_index) {
+        const uint8_t packed = frame[packed_index];
+        const size_t pixel_index = packed_index * 4;
+        s_framebuffer[pixel_index] = shades[(packed >> 6) & 0x03U];
+        s_framebuffer[pixel_index + 1] = shades[(packed >> 4) & 0x03U];
+        s_framebuffer[pixel_index + 2] = shades[(packed >> 2) & 0x03U];
+        s_framebuffer[pixel_index + 3] = shades[packed & 0x03U];
+    }
+}
+
+static void render_credits(void)
+{
+    const screen_color_t background = rgb332(8, 14, 24);
+    const screen_color_t header = rgb332(20, 90, 150);
+    const screen_color_t white = rgb332(245, 248, 250);
+    const screen_color_t cyan = rgb332(70, 210, 230);
+    const screen_color_t muted = rgb332(110, 130, 145);
+
+    fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, background);
+    fill_rect(0, 0, LCD_WIDTH, 36, header);
+    draw_text(16, 8, "CREDITS", 4, white);
+    draw_text(12, 50, "ORIGINALLY CREATED BY", 2, muted);
+    draw_text(12, 70, "HAMZA YESILMEN", 3, white);
+    draw_text(12, 102, "(HAMZAYSLMN)", 3, cyan);
+    draw_text(12, 136, "SOURCE GITHUB.COM/", 2, muted);
+    draw_text(12, 154, "HAMZAYSLMN", 2, white);
+    draw_text(12, 178, "GITHUB.COM/SPONSORS/", 2, muted);
+    draw_text(12, 196, "HAMZAYSLMN", 2, white);
+    draw_text(12, 220, "HOLD BACK", 2, cyan);
+}
+
 static void render_mode(copet_mode_t mode,
                         size_t selected_item,
-                        bool sensor_ok,
-                        float temperature,
-                        float humidity,
+                        const desk_mode_t *desk,
                         int32_t encoder_position,
                         uint8_t encoder_ab,
                         const char *touch_status,
@@ -828,11 +867,12 @@ static void render_mode(copet_mode_t mode,
                         copet_ble_status_t ble_status,
                         const char *ble_message,
                         audio_loopback_status_t audio_status,
-                        uint8_t audio_level)
+                        uint8_t audio_level,
+                        size_t animation_frame)
 {
     switch (mode) {
     case COPET_MODE_DESK:
-        render_desk(sensor_ok, temperature, humidity);
+        render_desk(desk);
         break;
     case COPET_MODE_SETTINGS:
         render_input_test(encoder_position, encoder_ab, touch_status);
@@ -847,6 +887,12 @@ static void render_mode(copet_mode_t mode,
     case COPET_MODE_AUDIO_TEST:
         render_audio_loopback(audio_status, audio_level);
         break;
+    case COPET_MODE_ANIMATION:
+        render_animation(animation_frame);
+        break;
+    case COPET_MODE_CREDITS:
+        render_credits();
+        break;
     case COPET_MODE_MENU:
     default:
         render_menu(selected_item);
@@ -856,13 +902,23 @@ static void render_mode(copet_mode_t mode,
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "CoPet menu + sensors + BLE + audio loopback test");
+    ESP_LOGI(TAG, "CoPet Desk + menu + hardware test");
     ESP_LOGI(TAG, "Board target: ESP32-WROOM-32");
 
     ESP_ERROR_CHECK(lcd_init());
     lcd_color_test();
     ESP_ERROR_CHECK(i2c_init());
     ESP_ERROR_CHECK(touch_button_init());
+    uint8_t mpu6050_address = 0;
+    const esp_err_t mpu6050_init_result =
+        mpu6050_init(s_i2c_bus, &mpu6050_address);
+    const bool mpu6050_available = mpu6050_init_result == ESP_OK;
+    if (mpu6050_available) {
+        ESP_LOGI(TAG, "MPU6050 motion reactions enabled at 0x%02X",
+                 mpu6050_address);
+    } else {
+        ESP_LOGW(TAG, "MPU6050 not found; motion reactions are waiting for hardware");
+    }
     const esp_err_t ble_init_result = copet_ble_init();
     const bool ble_available = ble_init_result == ESP_OK;
     if (!ble_available) {
@@ -888,9 +944,10 @@ void app_main(void)
     int32_t displayed_encoder_position = INT32_MIN;
     uint8_t displayed_encoder_ab = UINT8_MAX;
     const char *touch_status = "TOUCH READY";
-    copet_mode_t mode = COPET_MODE_MENU;
+    copet_mode_t mode = COPET_MODE_DESK;
     size_t selected_item = 0;
     bool force_redraw = true;
+    desk_mode_t desk;
     uint32_t focus_remaining_seconds = FOCUS_WORK_SECONDS;
     uint32_t focus_sessions = 0;
     bool focus_break_phase = false;
@@ -899,8 +956,23 @@ void app_main(void)
     copet_ble_status_t displayed_ble_status = COPET_BLE_OFF;
     char ble_message[65] = "NO MESSAGE";
     int64_t next_audio_ui_us = 0;
+    size_t animation_frame = 0;
+    int64_t next_animation_frame_us = 0;
+    int64_t next_desk_frame_us = 0;
+    int64_t menu_last_activity_us = 0;
+    int64_t next_mpu6050_read_us = 0;
+    desk_motion_event_t displayed_motion_event = DESK_MOTION_NONE;
+    int displayed_expression = -1;
+    int displayed_vibe = -1;
 
-    ESP_LOGI(TAG, "Mode: MENU");
+    desk_mode_init(&desk, (uint32_t)(esp_timer_get_time() / 1000));
+
+    ESP_ERROR_CHECK((size_t)(s_animation_data_end - s_animation_data_start) ==
+                    ANIMATION_FRAME_COUNT * ANIMATION_FRAME_BYTES
+                        ? ESP_OK
+                        : ESP_ERR_INVALID_SIZE);
+
+    ESP_LOGI(TAG, "Mode: DESK");
 
     while (true) {
         const int64_t now_us = esp_timer_get_time();
@@ -912,7 +984,13 @@ void app_main(void)
         if (touch_event == TOUCH_BUTTON_EVENT_SHORT) {
             ESP_LOGI(TAG, "TOUCH_SHORT");
             touch_status = "TOUCH SHORT";
-            if (mode == COPET_MODE_MENU) {
+            desk_mode_on_activity(&desk, (uint32_t)now_ms);
+            if (mode == COPET_MODE_DESK) {
+                desk_mode_on_touch(&desk, (uint32_t)now_ms);
+                ESP_LOGI(TAG, "Desk touch reaction: %s",
+                         desk_mode_touch_reaction_label(
+                             desk_mode_get_view(&desk)->touch_reaction));
+            } else if (mode == COPET_MODE_MENU) {
                 mode = MENU_ITEMS[selected_item].mode;
                 ESP_LOGI(TAG, "Mode opened: %s",
                          MENU_ITEMS[selected_item].label);
@@ -925,6 +1003,10 @@ void app_main(void)
                 } else if (mode == COPET_MODE_AUDIO_TEST &&
                            audio_available) {
                     audio_loopback_start();
+                } else if (mode == COPET_MODE_ANIMATION) {
+                    animation_frame = 0;
+                    next_animation_frame_us =
+                        now_us + ANIMATION_FRAME_INTERVAL_US;
                 }
             } else if (mode == COPET_MODE_FOCUS) {
                 if (focus_state == FOCUS_TIMER_RUNNING) {
@@ -942,7 +1024,8 @@ void app_main(void)
         } else if (touch_event == TOUCH_BUTTON_EVENT_LONG) {
             ESP_LOGI(TAG, "TOUCH_LONG");
             touch_status = "TOUCH LONG";
-            if (mode != COPET_MODE_MENU) {
+            desk_mode_on_activity(&desk, (uint32_t)now_ms);
+            if (mode != COPET_MODE_DESK) {
                 if (mode == COPET_MODE_PHONE_BRIDGE && ble_available) {
                     copet_ble_stop();
                 }
@@ -953,8 +1036,9 @@ void app_main(void)
                     focus_state == FOCUS_TIMER_RUNNING) {
                     focus_state = FOCUS_TIMER_PAUSED;
                 }
-                mode = COPET_MODE_MENU;
-                ESP_LOGI(TAG, "Mode: MENU");
+                mode = COPET_MODE_DESK;
+                next_desk_frame_us = 0;
+                ESP_LOGI(TAG, "Mode: DESK");
             }
             force_redraw = true;
         }
@@ -973,8 +1057,33 @@ void app_main(void)
                          esp_err_to_name(result));
                 sht31_address = 0;
             }
+            desk_mode_set_environment(&desk, sensor_ok,
+                                      temperature, humidity);
             next_sensor_read_us = now_us + 2000000;
             redraw = true;
+        }
+
+        if (mpu6050_available && now_us >= next_mpu6050_read_us) {
+            mpu6050_sample_t sample;
+            const esp_err_t motion_result = mpu6050_read(&sample);
+            if (motion_result == ESP_OK) {
+                const desk_motion_event_t motion_event =
+                    desk_mode_set_motion_sample(
+                        &desk, true,
+                        sample.accel_x_g, sample.accel_y_g, sample.accel_z_g,
+                        sample.gyro_x_dps, sample.gyro_y_dps,
+                        sample.gyro_z_dps, (uint32_t)now_ms);
+                if (motion_event != displayed_motion_event) {
+                    ESP_LOGI(TAG, "Motion reaction event: %d", motion_event);
+                    displayed_motion_event = motion_event;
+                }
+                if (mode == COPET_MODE_DESK) { redraw = true; }
+            } else {
+                desk_mode_set_motion_sample(&desk, false,
+                                            0, 0, 0, 0, 0, 0,
+                                            (uint32_t)now_ms);
+            }
+            next_mpu6050_read_us = now_us + 100000;
         }
 
         if (mode == COPET_MODE_FOCUS &&
@@ -1031,13 +1140,49 @@ void app_main(void)
             redraw = true;
         }
 
+        if (mode == COPET_MODE_ANIMATION &&
+            now_us >= next_animation_frame_us) {
+            animation_frame =
+                (animation_frame + 1) % ANIMATION_FRAME_COUNT;
+            next_animation_frame_us =
+                now_us + ANIMATION_FRAME_INTERVAL_US;
+            redraw = true;
+        }
+
+        desk_mode_update(&desk, (uint32_t)now_ms);
+        const desk_mode_view_t *desk_view = desk_mode_get_view(&desk);
+        if ((int)desk_view->expression != displayed_expression ||
+            (int)desk_view->vibe != displayed_vibe) {
+            displayed_expression = desk_view->expression;
+            displayed_vibe = desk_view->vibe;
+            ESP_LOGI(TAG, "Desk emotion: %s, effect: %s, idle=%lu s",
+                     desk_mode_expression_label(desk_view->expression),
+                     desk_mode_vibe_label(desk_view->vibe),
+                     (unsigned long)desk_view->inactivity_seconds);
+        }
+        if (mode == COPET_MODE_DESK && now_us >= next_desk_frame_us) {
+            next_desk_frame_us = now_us + DESK_FRAME_INTERVAL_US;
+            redraw = true;
+        }
+
         const int32_t encoder_position = s_encoder_position;
         const uint8_t encoder_ab = s_encoder_ab;
         if (encoder_position != displayed_encoder_position ||
             encoder_ab != displayed_encoder_ab) {
             if (encoder_position != displayed_encoder_position &&
+                displayed_encoder_position != INT32_MIN) {
+                desk_mode_on_activity(&desk, (uint32_t)now_ms);
+            }
+            if (encoder_position != displayed_encoder_position &&
                 displayed_encoder_position != INT32_MIN &&
-                mode == COPET_MODE_MENU) {
+                mode == COPET_MODE_DESK) {
+                mode = COPET_MODE_MENU;
+                menu_last_activity_us = now_us;
+                ESP_LOGI(TAG, "Mode: MENU");
+                force_redraw = true;
+            } else if (encoder_position != displayed_encoder_position &&
+                       displayed_encoder_position != INT32_MIN &&
+                       mode == COPET_MODE_MENU) {
                 const int32_t logical_steps =
                     encoder_position - displayed_encoder_position;
                 const size_t item_count =
@@ -1050,6 +1195,7 @@ void app_main(void)
                                         : wrapped);
                 ESP_LOGI(TAG, "Menu selected: %s",
                          MENU_ITEMS[selected_item].label);
+                menu_last_activity_us = now_us;
                 force_redraw = true;
             }
             displayed_encoder_position = encoder_position;
@@ -1059,12 +1205,20 @@ void app_main(void)
             }
         }
 
+        if (mode == COPET_MODE_MENU && menu_last_activity_us > 0 &&
+            now_us - menu_last_activity_us >= MENU_TIMEOUT_US) {
+            mode = COPET_MODE_DESK;
+            next_desk_frame_us = 0;
+            ESP_LOGI(TAG, "Menu timeout; Mode: DESK");
+            force_redraw = true;
+        }
+
         if (redraw || force_redraw) {
-            render_mode(mode, selected_item, sensor_ok, temperature, humidity,
+            render_mode(mode, selected_item, &desk,
                         encoder_position, encoder_ab, touch_status,
                         focus_remaining_seconds, focus_break_phase,
                         focus_state, focus_sessions, ble_status, ble_message,
-                        audio_status, audio_level);
+                        audio_status, audio_level, animation_frame);
             ESP_ERROR_CHECK(lcd_refresh());
             force_redraw = false;
         }

@@ -17,7 +17,7 @@ SPI / I2C / UART / GPIO / I2S / BLE
 
 ### Pins
 
-| Signal | ESP32-S3 pin | Module pin |
+| Signal | ESP32-WROOM-32 pin | Module pin |
 |---|---|---|
 |  |  |  |
 

@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900">
+  <defs>
+    <style>
+      .page { fill: #f3f6f7; }
+      .title { font: 700 30px 'Segoe UI', sans-serif; fill: #16212d; }
+      .subtitle { font: 16px 'Segoe UI', sans-serif; fill: #52616d; }
+      .device { fill: #ffffff; stroke: #1c526e; stroke-width: 4; }
+      .box { fill: #eaf2f5; stroke: #537589; stroke-width: 2; }
+      .core { fill: #d9f3f8; stroke: #1682a5; stroke-width: 3; }
+      .service { fill: #edf6e8; stroke: #5b8b48; stroke-width: 2; }
+      .cloud { fill: #fff4d3; stroke: #c39119; stroke-width: 3; }
+      .hardware { fill: #eceff1; stroke: #778995; stroke-width: 2; }
+      .future { fill: #f6f6f6; stroke: #9aa8b0; stroke-width: 2; stroke-dasharray: 7 5; }
+      .label { font: 700 16px 'Segoe UI', sans-serif; fill: #16212d; text-anchor: middle; }
+      .small { font: 13px 'Segoe UI', sans-serif; fill: #52616d; text-anchor: middle; }
+      .section { font: 700 18px 'Segoe UI', sans-serif; fill: #1c526e; }
+      .edge { fill: none; stroke: #355e72; stroke-width: 3; marker-end: url(#arrow); }
+      .event { fill: none; stroke: #1682a5; stroke-width: 3; stroke-dasharray: 7 5; marker-end: url(#arrow-blue); }
+      .online { fill: none; stroke: #c39119; stroke-width: 3; marker-end: url(#arrow-gold); }
+      .edge-text { font: 13px 'Segoe UI', sans-serif; fill: #355e72; text-anchor: middle; paint-order: stroke; stroke: #f3f6f7; stroke-width: 5; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#355e72"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#1682a5"/>
+    </marker>
+    <marker id="arrow-gold" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#c39119"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="900" class="page"/>
+  <text x="40" y="48" class="title">CoPet Pilot — архитектура взаимодействия экрана и системы</text>
+  <text x="40" y="76" class="subtitle">UI не управляет железом напрямую: события идут в state machine, сервисы работают асинхронно</text>
+
+  <!-- user input -->
+  <text x="45" y="130" class="section">Пользователь</text>
+  <rect x="40" y="155" width="210" height="70" rx="14" class="box"/>
+  <text x="145" y="184" class="label">ENCODER</text>
+  <text x="145" y="207" class="small">open / navigate / adjust</text>
+  <rect x="40" y="250" width="210" height="70" rx="14" class="box"/>
+  <text x="145" y="279" class="label">TTP223 TOUCH</text>
+  <text x="145" y="302" class="small">select / Home / Sleep</text>
+  <rect x="40" y="345" width="210" height="70" rx="14" class="box"/>
+  <text x="145" y="374" class="label">VOICE</text>
+  <text x="145" y="397" class="small">explicit short recording</text>
+
+  <!-- device boundary -->
+  <rect x="315" y="110" width="760" height="700" rx="26" class="device"/>
+  <text x="350" y="145" class="section">ESP32-WROOM-32 firmware — modular monolith</text>
+
+  <rect x="360" y="175" width="670" height="74" rx="15" class="core"/>
+  <text x="695" y="203" class="label">CORE: app_event_t + app_state</text>
+  <text x="695" y="226" class="small">BOOT → DESK ↔ MENU → selected mode; network state is separate</text>
+
+  <text x="365" y="282" class="section">Modes</text>
+  <rect x="360" y="300" width="122" height="64" rx="12" class="box"/>
+  <text x="421" y="337" class="label">DESK</text>
+  <rect x="495" y="300" width="122" height="64" rx="12" class="box"/>
+  <text x="556" y="337" class="label">MENU</text>
+  <rect x="630" y="300" width="122" height="64" rx="12" class="box"/>
+  <text x="691" y="337" class="label">FOCUS</text>
+  <rect x="765" y="300" width="122" height="64" rx="12" class="box"/>
+  <text x="826" y="337" class="label" style="font-size:14px">ASSISTANT</text>
+  <rect x="900" y="300" width="130" height="64" rx="12" class="box"/>
+  <text x="965" y="337" class="label" style="font-size:14px">SETTINGS</text>
+
+  <text x="365" y="403" class="section">Services</text>
+  <rect x="360" y="420" width="150" height="70" rx="12" class="service"/>
+  <text x="435" y="449" class="label">SENSORS</text>
+  <text x="435" y="472" class="small">validated samples</text>
+  <rect x="525" y="420" width="150" height="70" rx="12" class="service"/>
+  <text x="600" y="449" class="label">FOCUS</text>
+  <text x="600" y="472" class="small">timer/session state</text>
+  <rect x="690" y="420" width="150" height="70" rx="12" class="service"/>
+  <text x="765" y="449" class="label">NETWORK</text>
+  <text x="765" y="472" class="small">Wi-Fi / HTTPS / SNTP</text>
+  <rect x="855" y="420" width="175" height="70" rx="12" class="service"/>
+  <text x="942" y="449" class="label">AUDIO</text>
+  <text x="942" y="472" class="small">I2S stream / sounds</text>
+
+  <text x="365" y="531" class="section">UI render pipeline</text>
+  <rect x="360" y="550" width="185" height="70" rx="12" class="box"/>
+  <text x="452" y="579" class="label">UI MODEL</text>
+  <text x="452" y="602" class="small">mode + sensor + net data</text>
+  <rect x="600" y="550" width="185" height="70" rx="12" class="box"/>
+  <text x="692" y="579" class="label">RGB332 BUFFER</text>
+  <text x="692" y="602" class="small">240 × 240, dirty redraw</text>
+  <rect x="845" y="550" width="185" height="70" rx="12" class="box"/>
+  <text x="937" y="579" class="label">LCD TRANSFER</text>
+  <text x="937" y="602" class="small">RGB565 DMA stripes</text>
+  <path d="M545 585 L600 585" class="edge"/>
+  <path d="M785 585 L845 585" class="edge"/>
+
+  <text x="365" y="661" class="section">Drivers</text>
+  <rect x="360" y="680" width="130" height="62" rx="12" class="hardware"/>
+  <text x="425" y="717" class="label">GPIO</text>
+  <rect x="505" y="680" width="130" height="62" rx="12" class="hardware"/>
+  <text x="570" y="717" class="label">SPI/LCD</text>
+  <rect x="650" y="680" width="130" height="62" rx="12" class="hardware"/>
+  <text x="715" y="717" class="label">I2C</text>
+  <rect x="795" y="680" width="130" height="62" rx="12" class="hardware"/>
+  <text x="860" y="717" class="label">I2S</text>
+  <rect x="940" y="680" width="90" height="62" rx="12" class="hardware"/>
+  <text x="985" y="717" class="label">NVS</text>
+
+  <!-- input and event arrows -->
+  <path d="M250 190 C290 190 315 200 360 208" class="event"/>
+  <path d="M250 285 C290 285 315 235 360 218" class="event"/>
+  <path d="M250 380 C290 380 315 455 360 455" class="edge"/>
+  <text x="300" y="174" class="edge-text">input events</text>
+
+  <path d="M435 420 C435 385 520 380 600 249" class="event"/>
+  <path d="M600 420 C600 385 650 385 680 249" class="event"/>
+  <path d="M765 420 C765 385 760 330 740 249" class="event"/>
+  <path d="M942 420 C942 385 870 330 820 249" class="event"/>
+  <text x="910" y="389" class="edge-text">service events</text>
+
+  <path d="M695 249 L695 300" class="edge"/>
+  <path d="M695 364 C650 510 530 520 452 550" class="edge"/>
+  <text x="565" y="510" class="edge-text">render model</text>
+
+  <!-- hardware outside -->
+  <text x="315" y="850" class="section">Hardware:</text>
+  <text x="420" y="850" class="subtitle">TTP223 + encoder · ST7789 · SHT31/MPU6050 · INMP441/MAX98357A · flash/NVS</text>
+
+  <!-- cloud -->
+  <text x="1130" y="130" class="section">Online layer</text>
+  <rect x="1120" y="155" width="240" height="100" rx="18" class="cloud"/>
+  <text x="1240" y="191" class="label">COPET CLOUD API</text>
+  <text x="1240" y="216" class="small">weather / STT / search / AI</text>
+  <text x="1240" y="238" class="small">compact JSON ≤ 2 KB</text>
+
+  <rect x="1120" y="310" width="240" height="82" rx="18" class="cloud"/>
+  <text x="1240" y="342" class="label">SETUP BROWSER</text>
+  <text x="1240" y="366" class="small">optional phone or laptop</text>
+
+  <path d="M765 420 C765 270 1060 205 1120 205" class="online"/>
+  <text x="1018" y="245" class="edge-text">HTTPS</text>
+  <path d="M1120 350 C1030 350 900 390 765 420" class="online"/>
+  <text x="1012" y="372" class="edge-text">SoftAP setup</text>
+
+  <rect x="1120" y="485" width="240" height="82" rx="18" class="future"/>
+  <text x="1240" y="517" class="label">OUTDOOR / GPS</text>
+  <text x="1240" y="541" class="small">next product version</text>
+
+  <rect x="1120" y="620" width="240" height="110" rx="18" fill="#e9f3f7" stroke="#1682a5" stroke-width="2"/>
+  <text x="1240" y="651" class="label">RULE</text>
+  <text x="1240" y="678" class="small">cloud failure changes</text>
+  <text x="1240" y="699" class="small">only a small status/card</text>
+  <text x="1240" y="720" class="small">local modes stay alive</text>
+</svg>
