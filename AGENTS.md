@@ -8,7 +8,8 @@ The goal is **learning-first embedded development**, not copy-paste assembly. Th
 
 ## 1. Project summary
 
-**CoPet Pilot** is a desktop-first embedded robot companion based on **ESP32-S3**.
+**CoPet Pilot** is a desktop-first embedded robot companion based on an
+**ESP32-WROOM-32 DevKit**.
 
 The device has:
 
@@ -19,16 +20,17 @@ The device has:
 - MPU6050 IMU for motion, tilt, and wake-up behavior
 - speaker through an amplifier for sounds
 - SD card for local media, sounds, images, and logs
-- BLE Phone Bridge for phone app communication
-- optional microphone, preferably after the phone-based voice assistant works
-- GPS/GNSS module + antenna later for Outdoor/Speed mode
+- direct Wi-Fi/HTTPS for time, weather, search, and cloud assistant functions
+- INMP441 microphone for short cloud voice requests after text HTTPS works
+- optional diagnostic BLE, not a required phone bridge
+- GPS/GNSS module + antenna in a later product version
 
 Core idea:
 
 ```text
-ESP32-S3 = body, display, sensors, local state machine
-Phone app = internet, weather, voice input, AI, cloud features
-BLE = bridge between device and phone
+ESP32-WROOM-32 = body, display, sensors, audio, local state machine
+CoPet Cloud API = STT, search, AI, provider secrets, compact responses
+Wi-Fi/HTTPS = optional online layer; local behavior remains offline-first
 ```
 
 ---
@@ -40,7 +42,7 @@ Do not build a giant final solution at once.
 Always work module by module:
 
 ```text
-ESP32-S3 boot
+ESP32-WROOM-32 boot directly into Desk Mode
 → ST7789 display
 → menu UI
 → encoder + touch input
@@ -48,8 +50,11 @@ ESP32-S3 boot
 → MPU6050
 → audio
 → SD card
-→ BLE Phone Bridge
-→ GPS Outdoor Mode
+→ firmware architecture refactor
+→ direct Wi-Fi + one HTTPS request
+→ Online Assistant
+→ SD / Mini TV
+→ GPS Outdoor Mode in a later version
 ```
 
 Every module must have:
@@ -109,7 +114,9 @@ Do not use:
 - random full-project code from the internet
 - blocking delays everywhere
 - hidden magic libraries without explaining what they do
-- Wi-Fi/internet on ESP32 for MVP if the same feature can be done through Phone Bridge
+- mandatory phone application or BLE bridge for normal operation
+- third-party API keys in firmware or Git
+- HTML scraping on the ESP32; use a compact JSON API
 
 ---
 
@@ -117,7 +124,7 @@ Do not use:
 
 | Component | Use | Interface |
 |---|---|---|
-| ESP32-S3 | main controller | core |
+| ESP32-WROOM-32 DevKit | main controller | core |
 | ST7789 240×240 TFT | face/menu/Mini TV | SPI |
 | Touch button | quick action / Focus | GPIO or capacitive touch |
 | Rotary encoder | menu scrolling | GPIO A/B + switch |
@@ -126,9 +133,10 @@ Do not use:
 | Speaker | sounds/audio | amplifier required |
 | MAX98357A / PAM amp | speaker driver | I2S or analog/PWM |
 | SD card | media/logs | SPI |
-| BLE Phone Bridge | phone connection | BLE GATT |
-| GPS/GNSS module | speed/distance later | UART |
-| Microphone | later voice input | I2S preferred |
+| Wi-Fi | direct cloud connection | 2.4 GHz + HTTPS |
+| BLE diagnostic | optional hardware test | BLE GATT |
+| GPS/GNSS module | next-version Outdoor Mode | UART |
+| INMP441 microphone | short cloud voice input | I2S |
 
 Important note:
 
@@ -181,13 +189,19 @@ firmware/
       sd_card.c
       sd_card.h
 
-    copet_ble/
-      ble_bridge.c
-      ble_bridge.h
-      ble_protocol.c
-      ble_protocol.h
+    copet_network/
+      wifi_service.c
+      wifi_service.h
+      http_service.c
+      http_service.h
 
-    copet_gps/
+    copet_assistant/
+      assistant_service.c
+      assistant_service.h
+      assistant_protocol.c
+      assistant_protocol.h
+
+    copet_gps/             # later product version
       gps_parser.c
       gps_parser.h
 ```
@@ -202,9 +216,8 @@ typedef enum {
     COPET_MODE_MENU,
     COPET_MODE_DESK,
     COPET_MODE_FOCUS,
-    COPET_MODE_PHONE_BRIDGE,
+    COPET_MODE_ASSISTANT,
     COPET_MODE_MINI_TV,
-    COPET_MODE_OUTDOOR,
     COPET_MODE_SETTINGS,
     COPET_MODE_SLEEP
 } copet_mode_t;
@@ -252,18 +265,18 @@ Features:
 - visual focus animation
 - local focus session counter
 
-### Phone Bridge Mode
+### Assistant Mode
 
-Manual BLE mode only.
+Manual online mode. The device remains usable when offline.
 
 Features:
 
-- device starts advertising only after user selects this mode
-- phone connects over BLE
-- phone sends weather, notifications, AI answers, settings
+- encoder/touch selects a preset query or starts a short recording
+- ESP32 sends one bounded HTTPS request to CoPet Cloud API
+- cloud performs STT/search/AI and returns compact JSON
 - ESP32 shows short UI cards and animations
 
-BLE is for control/status/text, not video streaming.
+Do not store provider secrets on the device. Do not parse search HTML.
 
 ### Mini TV Mode
 
@@ -272,7 +285,7 @@ Local media mode.
 Preferred source:
 
 ```text
-SD card → ESP32-S3 → ST7789 + speaker
+SD card → ESP32-WROOM-32 → ST7789 + speaker
 ```
 
 Use local clips, not YouTube streaming.
@@ -284,9 +297,9 @@ MJPEG 240×240 10–15 fps
 WAV or simple decoded audio
 ```
 
-### Outdoor Mode
+### Outdoor Mode, deferred
 
-Later revision.
+Later product/hardware revision, not part of the current MVP or menu.
 
 Features:
 
@@ -302,7 +315,7 @@ Speed should come from GPS/GNSS, not from integrating accelerometer data.
 
 ## 8. Development phases
 
-### Phase 1 — ESP32-S3 base
+### Phase 1 — ESP32-WROOM-32 base
 
 Goal:
 
@@ -428,85 +441,92 @@ focus complete sound works
 
 ---
 
-### Phase 6 — SD card + Mini TV
+### Phase 6 — Firmware architecture refactor
 
 Goal:
 
 ```text
-Device reads files from SD card and plays simple media.
+Working hardware behavior is split out of app_main without regressions.
 ```
 
 Learn:
 
-- SPI shared bus
-- FAT filesystem
-- file streaming
-- buffering
-- media limits
+- typed application events
+- Desk-first state machine
+- driver/service/mode/UI boundaries
+- bounded queues
+- host tests for pure state logic
 
 Done when:
 
 ```text
-SD file list appears
-image loads from SD
-short local clip plays
+boot opens Desk Mode
+encoder opens Menu
+long touch returns Home
+app_main only wires modules together
 ```
 
 ---
 
-### Phase 7 — BLE Phone Bridge
+### Phase 7 — Direct Wi-Fi
 
 Goal:
 
 ```text
-Phone can send structured messages to CoPet.
+CoPet connects directly to Wi-Fi without blocking local UI.
 ```
 
 Learn:
 
-- BLE advertising
-- GATT service
-- characteristics
-- JSON or compact protocol
-
-Done when phone sends:
-
-```json
-{
-  "type": "weather_update",
-  "temp": 18,
-  "condition": "rain",
-  "text": "Take umbrella"
-}
-```
-
-and CoPet displays it.
-
----
-
-### Phase 8 — GPS Outdoor Mode
-
-Goal:
-
-```text
-Device reads GPS speed and fix status.
-```
-
-Learn:
-
-- UART
-- NMEA parsing
-- GPS fix
-- speed over ground
+- SoftAP provisioning
+- NVS credentials
+- reconnect state machine
+- SNTP
+- HTTPS and certificate verification
 
 Done when:
 
 ```text
-GPS: FIX
-Speed: 12.4 km/h
+Desk Mode remains responsive while Wi-Fi reconnects
+one HTTPS weather/time request returns a compact result card
 ```
 
-appears outside with real satellite fix.
+---
+
+### Phase 8 — Online Assistant
+
+Goal:
+
+```text
+CoPet sends one bounded query to CoPet Cloud API.
+```
+
+Learn:
+
+- compact JSON protocol
+- timeouts and retry policy
+- I2S audio streaming after text query works
+- cloud STT/search/AI boundaries
+
+Done when:
+
+```text
+preset text query displays a short answer
+offline/timeout state returns safely to Desk Mode
+```
+
+---
+
+### Phase 9 — SD card + Mini TV
+
+Start only after the no-CS display and SD SPI topology is resolved.
+
+Done when a file list, one image sequence, and bounded audio playback work
+without blocking UI.
+
+### Later version — GPS Outdoor Mode
+
+Do not implement GPS, speed, distance, or outdoor states in the current MVP.
 
 ---
 
@@ -515,7 +535,7 @@ appears outside with real satellite fix.
 - Keep modules small.
 - Use clear names: `copet_ui_init()`, `sht31_read()`, `gps_parse_nmea()`.
 - Avoid global state unless it belongs to the app state machine.
-- No long blocking loops in UI/audio/BLE code.
+- No long blocking loops in UI/audio/network code.
 - Prefer explicit error handling.
 - Log hardware failures clearly.
 - Add comments only where they explain hardware behavior or non-obvious logic.
@@ -573,7 +593,7 @@ For portfolio value, include:
 
 If missing, ask for:
 
-1. exact ESP32-S3 board model
+1. whether the known ESP32-WROOM-32 DevKit wiring has changed
 2. display pin labels and voltage
 3. sensor module labels
 4. current pin plan
@@ -590,16 +610,16 @@ Do not ask unnecessary questions when a safe minimal test can be written with pl
 The current recommended next step is:
 
 ```text
-Phase 1: ESP32-S3 base project
+Phase 6: architecture refactor of the working hardware test
 ```
 
 Then:
 
 ```text
-Phase 2: ST7789 display test
+Phase 7: direct Wi-Fi, SNTP, then one HTTPS request
 ```
 
-Do not start BLE, GPS, Mini TV, or microphone before display + input + sensors are stable.
+Do not start GPS or Mini TV before the local architecture and direct Wi-Fi path are stable. Prove a text HTTPS request before cloud audio upload.
 
 ---
 
@@ -608,7 +628,7 @@ Do not start BLE, GPS, Mini TV, or microphone before display + input + sensors a
 This project should prove embedded engineering skills:
 
 ```text
-SPI + I2C + UART + GPIO + I2S + BLE
+SPI + I2C + GPIO + I2S + Wi-Fi + HTTPS
 state machine design
 small-screen UI
 device behavior design

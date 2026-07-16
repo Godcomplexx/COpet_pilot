@@ -4,7 +4,7 @@
 
 | Component | Use | Interface | Priority |
 |---|---|---|---|
-| ESP32-S3 | main controller | core | P0 |
+| ESP32-WROOM-32 DevKit | main controller | core | P0 |
 | ST7789 240×240 TFT | UI/face | SPI | P0 |
 | capacitive touch button | quick input | GPIO/touch | P0 |
 | mouse wheel / encoder | menu | GPIO | P0 |
@@ -12,8 +12,8 @@
 | MPU6050 | motion/tilt | I2C | P0 |
 | speaker | sound | I2S amp | P1 |
 | SD card | video/audio | SPI | P1 |
-| GPS + antenna | speed | UART | P2 |
-| microphone | voice | I2S | P3 |
+| GPS + antenna | next-version Outdoor Mode | UART | deferred |
+| INMP441 microphone | short online voice request | I2S | P1 |
 
 ## What each teaches
 

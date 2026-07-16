@@ -1,7 +1,7 @@
 # ESP32 DevKit hardware test
 
 This test firmware is for the **ESP32-WROOM-32 DevKit shown in the photos**.
-It is not the ESP32-S2 Saola or the planned ESP32-S3 board.
+ESP32-WROOM-32 is also the target board for the desktop product version.
 
 The current test proves seven behaviors:
 
@@ -10,7 +10,7 @@ The current test proves seven behaviors:
 3. The three-contact roller encoder changes the menu selection.
 4. TTP223 opens a mode with a short touch and returns with a long touch.
 5. Focus Mode runs a non-blocking 25/5 work and break timer.
-6. Phone Bridge advertises over BLE only while its mode is open.
+6. The diagnostic Phone Bridge advertises over BLE only while its mode is open.
 7. Audio Loopback routes INMP441 microphone samples to MAX98357A.
 
 ## Wiring
@@ -169,3 +169,19 @@ Before loopback it plays a two-second 1 kHz output test tone.
 - Repeated reboot with `LCD framebuffer allocation failed`: an old RGB565
   framebuffer build is still flashed; rebuild and flash the RGB332 stripe
   version.
+
+## Current Desk-first behavior
+
+The current firmware supersedes the older menu-first behavior described above:
+
+```text
+BOOT -> DESK
+turn encoder -> MENU
+short touch -> select / Desk reaction
+long touch -> DESK
+MENU idle for 10 seconds -> DESK
+```
+
+Desk Mode now renders procedural eyes at 8 fps, reads SHT31 every two seconds,
+and displays `COMFY`, `COLD`, `HOT`, `DRY`, `HUMID`, or `SENSOR`. Detailed
+verification steps are in `docs/18_desk_mode_learning_log.md`.
