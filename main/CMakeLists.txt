@@ -5,9 +5,20 @@ idf_component_register(
         "drivers/copet_ble.c"
         "drivers/mpu6050.c"
         "drivers/touch_button.c"
+        "modes/animation_mode.c"
         "modes/desk_mode.c"
+        "modes/focus_mode.c"
+        "modes/menu_mode.c"
+        "services/weather_service.c"
+        "services/wifi_service.c"
+        "ui/animation_ui.c"
         "ui/desk_ui.c"
+        "ui/diag_ui.c"
+        "ui/focus_ui.c"
+        "ui/menu_ui.c"
+        "ui/settings_ui.c"
         "ui/pip_face_port.c"
+        "ui/ui_canvas.c"
     INCLUDE_DIRS "."
     EMBED_FILES
         "assets/copet_animation_2bpp.bin"
@@ -18,6 +29,11 @@ idf_component_register(
         esp_driver_i2s
         esp_driver_spi
         esp_lcd
+        esp_event
+        esp_http_client
+        esp_netif
         esp_timer
+        esp_wifi
+        json
         nvs_flash
 )

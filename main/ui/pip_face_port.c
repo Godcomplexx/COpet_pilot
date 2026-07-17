@@ -392,13 +392,8 @@ void pip_face_port_render(uint8_t *framebuffer, int screen_width,
     face_canvas_t canvas = {
         framebuffer, screen_width, screen_height, x, y, width, height,
     };
-    const color_t background = rgb332(12, 31, 53);
-    color_t eye_color = rgb332(235, 250, 255);
-    if (view->comfort == DESK_COMFORT_HOT) {
-        eye_color = rgb332(255, 165, 90);
-    } else if (view->comfort == DESK_COMFORT_COLD) {
-        eye_color = rgb332(115, 215, 255);
-    }
+    const color_t background = rgb332(0, 0, 0);
+    const color_t eye_color = rgb332(150, 255, 70);
 
     float now = view->animation_time_ms / 1000.0f;
     float gaze_x = view->gaze_x;
@@ -481,8 +476,8 @@ void pip_face_port_render(uint8_t *framebuffer, int screen_width,
         draw_z(&canvas, 112.0f, 16.0f, 7.0f, eye_color);
     }
     if (view->vibe == DESK_VIBE_SMOKING) {
-        draw_smoking(&canvas, now, eye_color, rgb332(150, 180, 190));
+        draw_smoking(&canvas, now, eye_color, rgb332(65, 170, 60));
     } else if (view->vibe == DESK_VIBE_OVERHEATED) {
-        draw_heat(&canvas, now, rgb332(255, 120, 55));
+        draw_heat(&canvas, now, rgb332(210, 250, 65));
     }
 }

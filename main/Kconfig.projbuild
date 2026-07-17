@@ -1,0 +1,49 @@
+menu "CoPet Pilot"
+
+    config COPET_WIFI_ENABLED
+        bool "Enable Wi-Fi Station"
+        default y
+        help
+            Start Wi-Fi in the background while local Desk Mode keeps running.
+
+    config COPET_WIFI_SSID
+        string "Wi-Fi SSID"
+        default ""
+        depends on COPET_WIFI_ENABLED
+        help
+            Stored only in the local sdkconfig file, which is ignored by Git.
+
+    config COPET_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+        depends on COPET_WIFI_ENABLED
+        help
+            Stored only in the local sdkconfig file. Never print it to logs.
+
+    config COPET_DIAGNOSTIC_BLE_ENABLED
+        bool "Enable optional diagnostic BLE at boot"
+        default n
+        help
+            BLE is not required for normal phone-free operation. Keeping it off
+            leaves more RAM for network services on ESP32-WROOM-32.
+
+    config COPET_WEATHER_ENABLED
+        bool "Enable outdoor weather"
+        default y
+        depends on COPET_WIFI_ENABLED
+
+    config COPET_WEATHER_LATITUDE
+        string "Weather latitude"
+        default "53.1959"
+        depends on COPET_WEATHER_ENABLED
+        help
+            WGS84 latitude. Default is Samara.
+
+    config COPET_WEATHER_LONGITUDE
+        string "Weather longitude"
+        default "50.1008"
+        depends on COPET_WEATHER_ENABLED
+        help
+            WGS84 longitude. Default is Samara.
+
+endmenu

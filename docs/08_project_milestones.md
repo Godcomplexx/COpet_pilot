@@ -44,6 +44,14 @@ Done when:
 - display/input/sensors/modes are separated from app_main;
 - state transitions have host tests.
 
+Status (in progress): boot opens Desk and the encoder opens Menu. Mode logic is
+in `main/modes/` (`desk`, `menu`, `focus`, `animation`) and per-screen rendering
+in `main/ui/` on a shared `ui_canvas`; `app_main.c` is now the hardware + main
+loop integration layer. State transitions for focus/menu/animation are covered
+by host tests in `test/host/` (run `test/host/run_tests.ps1`). Remaining:
+moving the ST7789/SPI driver glue out of `app_main.c`, and the `assistant`
+module lands with M7.
+
 ## M6 — Direct Wi-Fi
 
 Done when:

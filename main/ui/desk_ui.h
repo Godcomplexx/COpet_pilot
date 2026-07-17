@@ -4,8 +4,17 @@
 #include <stdint.h>
 
 #include "modes/desk_mode.h"
+#include "services/weather_service.h"
+
+typedef enum {
+    DESK_UI_ENVIRONMENT_ROOM,
+    DESK_UI_ENVIRONMENT_OUTDOOR,
+} desk_ui_environment_t;
 
 void desk_ui_render(uint8_t *framebuffer, int width, int height,
-                    const desk_mode_view_t *view);
+                    const desk_mode_view_t *view,
+                    const char *network_status,
+                    const weather_service_snapshot_t *weather,
+                    desk_ui_environment_t environment);
 
 #endif
