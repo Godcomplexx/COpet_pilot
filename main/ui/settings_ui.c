@@ -1,10 +1,13 @@
 #include "ui/settings_ui.h"
+#include "ui/pip_face_port.h"
 #include "ui/ui_canvas.h"
 
 #include <stddef.h>
 
 void settings_ui_render(uint8_t *framebuffer, int width, int height,
                         const desk_mode_view_t *view,
+                        const settings_mode_t *settings,
+                        const copet_behavior_view_t *behavior,
                         const char *network_status,
                         const weather_service_snapshot_t *weather)
 {
@@ -23,7 +26,8 @@ void settings_ui_render(uint8_t *framebuffer, int width, int height,
     ui_fill_rect(&canvas, 0, 0, width, height, background);
     ui_draw_scanlines(&canvas, scanline);
     ui_draw_text(&canvas, 8, 6, "SETTINGS", 3, phosphor);
-    ui_draw_text(&canvas, 160, 8, "STATUS", 2, muted);
+    pip_face_port_render_compact(framebuffer, width, height,
+                                 174, 3, 56, 25, behavior);
     ui_draw_dashed_horizontal(&canvas, 6, 30, 228, grid);
 
     const char *weather_status = weather == NULL
@@ -33,11 +37,11 @@ void settings_ui_render(uint8_t *framebuffer, int width, int height,
         ? "READY"
         : "NO DATA";
     static const char *const labels[] = {
-        "NETWORK", "WEATHER", "ROOM SENSOR", "SCREEN ROTATE",
+        "NETWORK", "WEATHER", "ROOM SENSOR", "SOUND",
     };
     const char *const values[] = {
         network_status != NULL ? network_status : "WIFI OFF",
-        weather_status, sensor_status, "0 DEG",
+        weather_status, sensor_status, settings_mode_sound_label(settings),
     };
     for (size_t index = 0; index < 4; ++index) {
         const int y = 42 + (int)index * 36;
@@ -47,7 +51,7 @@ void settings_ui_render(uint8_t *framebuffer, int width, int height,
     }
 
     ui_draw_dashed_horizontal(&canvas, 6, 195, 228, grid);
-    ui_draw_text(&canvas, 8, 204, "CONFIG NEXT", 2, muted);
+    ui_draw_text(&canvas, 8, 204, "TOUCH SOUND", 2, muted);
     ui_draw_text(&canvas, 152, 204, "HOLD HOME", 2, phosphor);
-    ui_draw_text(&canvas, 8, 225, "STATUS VIEW", 2, muted);
+    ui_draw_text(&canvas, 8, 225, "RUNTIME SETTING", 2, muted);
 }

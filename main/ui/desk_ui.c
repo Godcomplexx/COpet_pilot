@@ -20,6 +20,7 @@ static ui_color_t comfort_color(desk_comfort_t comfort)
 
 void desk_ui_render(uint8_t *framebuffer, int width, int height,
                     const desk_mode_view_t *view,
+                    const copet_behavior_view_t *behavior,
                     const char *network_status,
                     const weather_service_snapshot_t *weather,
                     desk_ui_environment_t environment)
@@ -49,7 +50,8 @@ void desk_ui_render(uint8_t *framebuffer, int width, int height,
 
     ui_draw_terminal_grid(&canvas, 5, 24, 230, 152, grid);
     ui_draw_corner_marks(&canvas, 5, 24, 230, 152, accent);
-    pip_face_port_render(framebuffer, width, height, 7, 26, 226, 148, view);
+    pip_face_port_render(framebuffer, width, height, 7, 26, 226, 148,
+                         view, behavior);
 
     const bool show_outdoor = environment == DESK_UI_ENVIRONMENT_OUTDOOR;
     ui_draw_dashed_horizontal(&canvas, 6, 179, 228, grid);
@@ -84,7 +86,10 @@ void desk_ui_render(uint8_t *framebuffer, int width, int height,
     ui_draw_dashed_vertical(&canvas, 119, 195, 29, grid);
 
     ui_draw_text(&canvas, 8, 230,
-                 desk_mode_expression_label(view->expression), 2, accent);
+                 behavior != NULL && behavior->id != COPET_BEHAVIOR_NEUTRAL
+                     ? copet_behavior_label(behavior->id)
+                     : desk_mode_expression_label(view->expression),
+                 2, accent);
     ui_draw_text(&canvas, 96, 230, desk_mode_comfort_label(view->comfort),
                  2, pale);
     ui_draw_text(&canvas, 200, 230, "MENU", 2, phosphor);

@@ -1,4 +1,5 @@
 #include "ui/menu_ui.h"
+#include "ui/pip_face_port.h"
 #include "ui/ui_canvas.h"
 
 #include <stdbool.h>
@@ -6,7 +7,9 @@
 #include <stdio.h>
 
 void menu_ui_render(uint8_t *framebuffer, int width, int height,
-                    const menu_mode_t *menu, const char *network_status)
+                    const menu_mode_t *menu,
+                    const copet_behavior_view_t *behavior,
+                    const char *network_status)
 {
     if (framebuffer == NULL || menu == NULL || width <= 0 || height <= 0) {
         return;
@@ -28,7 +31,13 @@ void menu_ui_render(uint8_t *framebuffer, int width, int height,
     char line[16];
     snprintf(line, sizeof(line), "%02u/%02u",
              (unsigned)(menu->selected + 1U), (unsigned)count);
-    ui_draw_text(&canvas, 176, 8, line, 2, muted);
+    if (behavior != NULL && behavior->id != COPET_BEHAVIOR_NEUTRAL) {
+        ui_fill_rect(&canvas, 172, 3, 62, 26, background);
+        pip_face_port_render_compact(framebuffer, width, height,
+                                     176, 4, 54, 24, behavior);
+    } else {
+        ui_draw_text(&canvas, 176, 8, line, 2, muted);
+    }
     ui_draw_text(&canvas, 8, 27, "SYSTEM", 2, muted);
     ui_draw_text(&canvas, 136, 27,
                  network_status != NULL ? network_status : "WIFI OFF",

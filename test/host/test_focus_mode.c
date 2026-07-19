@@ -24,7 +24,7 @@ static void test_start_and_tick(void)
     focus_mode_t focus;
     focus_mode_init(&focus);
 
-    CHECK(focus_mode_toggle(&focus, us(0)) == true);
+    CHECK(focus_mode_toggle(&focus, us(0)) == FOCUS_TOGGLE_STARTED);
     CHECK(focus.state == FOCUS_TIMER_RUNNING);
     CHECK_STR(focus_mode_action_hint(&focus), "TOUCH PAUSE");
 
@@ -56,7 +56,8 @@ static void test_work_completes_into_break(void)
     CHECK_STR(focus_mode_status_label(&focus), "BREAK READY");
 
     /* Resume the break and let it finish -> back to a fresh work phase. */
-    focus_mode_toggle(&focus, us(FOCUS_WORK_SECONDS + 5));
+    CHECK(focus_mode_toggle(&focus, us(FOCUS_WORK_SECONDS + 5)) ==
+          FOCUS_TOGGLE_STARTED);
     CHECK(focus.state == FOCUS_TIMER_RUNNING);
     CHECK(focus_mode_tick(&focus,
                           us(FOCUS_WORK_SECONDS + 5 + FOCUS_BREAK_SECONDS)) ==
@@ -76,7 +77,7 @@ static void test_pause_preserves_and_resumes_cleanly(void)
     const uint32_t after_minute = focus.remaining_seconds;
 
     /* Short touch while running pauses and keeps the remaining time. */
-    focus_mode_toggle(&focus, us(60));
+    CHECK(focus_mode_toggle(&focus, us(60)) == FOCUS_TOGGLE_PAUSED);
     CHECK(focus.state == FOCUS_TIMER_PAUSED);
     CHECK(focus.remaining_seconds == after_minute);
     CHECK_STR(focus_mode_action_hint(&focus), "TOUCH RESUME");
@@ -86,7 +87,7 @@ static void test_pause_preserves_and_resumes_cleanly(void)
     CHECK(focus.remaining_seconds == after_minute);
 
     /* Resuming re-anchors the clock: no time is lost from the pause. */
-    focus_mode_toggle(&focus, us(600));
+    CHECK(focus_mode_toggle(&focus, us(600)) == FOCUS_TOGGLE_RESUMED);
     CHECK(focus.state == FOCUS_TIMER_RUNNING);
     CHECK(focus_mode_tick(&focus, us(601)) == true);
     CHECK(focus.remaining_seconds == after_minute - 1);

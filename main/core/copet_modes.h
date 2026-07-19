@@ -18,7 +18,6 @@ typedef enum {
     COPET_MODE_OUTDOOR,
     COPET_MODE_SETTINGS,
     COPET_MODE_SLEEP,
-    COPET_MODE_AUDIO_TEST,
     COPET_MODE_ANIMATION,
 } copet_mode_t;
 

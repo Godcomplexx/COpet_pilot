@@ -1,17 +1,18 @@
 idf_component_register(
     SRCS
         "app_main.c"
-        "drivers/audio_loopback.c"
+        "core/copet_behavior.c"
+        "drivers/copet_audio.c"
         "drivers/copet_ble.c"
         "drivers/mpu6050.c"
         "drivers/touch_button.c"
-        "modes/animation_mode.c"
         "modes/desk_mode.c"
         "modes/focus_mode.c"
         "modes/menu_mode.c"
+        "modes/settings_mode.c"
         "services/weather_service.c"
         "services/wifi_service.c"
-        "ui/animation_ui.c"
+        "ui/boot_ui.c"
         "ui/desk_ui.c"
         "ui/diag_ui.c"
         "ui/focus_ui.c"
@@ -21,7 +22,10 @@ idf_component_register(
         "ui/ui_canvas.c"
     INCLUDE_DIRS "."
     EMBED_FILES
-        "assets/copet_animation_2bpp.bin"
+        "assets/sounds/menu_confirm.pcm"
+        "assets/sounds/menu_move.pcm"
+        "assets/sounds/focus_start.pcm"
+        "assets/sounds/focus_complete.pcm"
     REQUIRES
         bt
         esp_driver_gpio
@@ -34,6 +38,5 @@ idf_component_register(
         esp_netif
         esp_timer
         esp_wifi
-        json
         nvs_flash
 )

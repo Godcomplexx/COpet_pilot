@@ -1,7 +1,7 @@
 #include "drivers/copet_audio.h"
 
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
 #include "driver/i2s_std.h"
 #include "esp_check.h"
@@ -14,173 +14,157 @@ enum {
     AUDIO_PIN_BCLK = 26,
     AUDIO_PIN_LRC = 25,
     AUDIO_PIN_DOUT = 27,
+    AUDIO_SAMPLE_RATE = 16000,
     AUDIO_BUFFER_FRAMES = 128,
-    AUDIO_AMPLITUDE_16 = 28000,
-    AUDIO_AMPLITUDE_32 = 0x60000000,
+    AUDIO_OUTPUT_GAIN_PERCENT = 25,
 };
 
-typedef enum {
-    AUDIO_PROFILE_16K_16BIT,
-    AUDIO_PROFILE_44K1_16BIT,
-    AUDIO_PROFILE_48K_32BIT,
-} audio_profile_t;
-
 typedef struct {
-    uint16_t frequency_hz;
-    uint16_t duration_ms;
-    audio_profile_t profile;
-} tone_command_t;
+    const uint8_t *start;
+    const uint8_t *end;
+    const char *name;
+} audio_clip_t;
+
+extern const uint8_t menu_confirm_start[]
+    asm("_binary_menu_confirm_pcm_start");
+extern const uint8_t menu_confirm_end[]
+    asm("_binary_menu_confirm_pcm_end");
+extern const uint8_t menu_move_start[]
+    asm("_binary_menu_move_pcm_start");
+extern const uint8_t menu_move_end[]
+    asm("_binary_menu_move_pcm_end");
+extern const uint8_t focus_start_start[]
+    asm("_binary_focus_start_pcm_start");
+extern const uint8_t focus_start_end[]
+    asm("_binary_focus_start_pcm_end");
+extern const uint8_t focus_complete_start[]
+    asm("_binary_focus_complete_pcm_start");
+extern const uint8_t focus_complete_end[]
+    asm("_binary_focus_complete_pcm_end");
 
 static const char *TAG = "copet_audio";
 static i2s_chan_handle_t s_tx_channel;
-static QueueHandle_t s_tone_queue;
+static QueueHandle_t s_event_queue;
+static volatile bool s_enabled = true;
 
-static uint32_t profile_sample_rate(audio_profile_t profile)
+static bool get_clip(copet_audio_event_t event, audio_clip_t *clip)
 {
-    switch (profile) {
-    case AUDIO_PROFILE_16K_16BIT:
-        return 16000;
-    case AUDIO_PROFILE_44K1_16BIT:
-        return 44100;
-    case AUDIO_PROFILE_48K_32BIT:
-        return 48000;
+    if (clip == NULL) {
+        return false;
+    }
+    switch (event) {
+    case COPET_AUDIO_MENU_MOVE:
+        *clip = (audio_clip_t){menu_move_start, menu_move_end, "MENU MOVE"};
+        return true;
+    case COPET_AUDIO_MENU_CONFIRM:
+        *clip = (audio_clip_t){menu_confirm_start, menu_confirm_end,
+                               "MENU CONFIRM"};
+        return true;
+    case COPET_AUDIO_VIEW_CHANGE:
+        *clip = (audio_clip_t){menu_move_start, menu_move_end,
+                               "VIEW CHANGE"};
+        return true;
+    case COPET_AUDIO_FOCUS_START:
+        *clip = (audio_clip_t){focus_start_start, focus_start_end,
+                               "FOCUS START"};
+        return true;
+    case COPET_AUDIO_FOCUS_PAUSE:
+        *clip = (audio_clip_t){menu_confirm_start, menu_confirm_end,
+                               "FOCUS PAUSE"};
+        return true;
+    case COPET_AUDIO_FOCUS_COMPLETE:
+        *clip = (audio_clip_t){focus_complete_start, focus_complete_end,
+                               "FOCUS COMPLETE"};
+        return true;
     default:
-        return 48000;
+        return false;
     }
 }
 
-static i2s_data_bit_width_t profile_bit_width(audio_profile_t profile)
+static int16_t read_scaled_sample(const uint8_t *bytes)
 {
-    return profile == AUDIO_PROFILE_48K_32BIT
-               ? I2S_DATA_BIT_WIDTH_32BIT
-               : I2S_DATA_BIT_WIDTH_16BIT;
+    const int16_t sample = (int16_t)((uint16_t)bytes[0] |
+                                     ((uint16_t)bytes[1] << 8));
+    return (int16_t)(((int32_t)sample * AUDIO_OUTPUT_GAIN_PERCENT) / 100);
 }
 
-static const char *profile_name(audio_profile_t profile)
+static void write_silence(void)
 {
-    switch (profile) {
-    case AUDIO_PROFILE_16K_16BIT:
-        return "16 kHz / 16-bit Philips";
-    case AUDIO_PROFILE_44K1_16BIT:
-        return "44.1 kHz / 16-bit Philips";
-    case AUDIO_PROFILE_48K_32BIT:
-        return "48 kHz / 32-bit Philips";
-    default:
-        return "unknown";
-    }
-}
-
-static esp_err_t audio_apply_profile(audio_profile_t profile)
-{
-    const i2s_std_clk_config_t clock_config =
-        I2S_STD_CLK_DEFAULT_CONFIG(profile_sample_rate(profile));
-    const i2s_std_slot_config_t slot_config =
-        I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-            profile_bit_width(profile), I2S_SLOT_MODE_STEREO);
-
-    ESP_RETURN_ON_ERROR(i2s_channel_disable(s_tx_channel),
-                        TAG, "I2S disable failed");
-    ESP_RETURN_ON_ERROR(
-        i2s_channel_reconfig_std_clock(s_tx_channel, &clock_config),
-        TAG, "I2S clock reconfiguration failed");
-    ESP_RETURN_ON_ERROR(
-        i2s_channel_reconfig_std_slot(s_tx_channel, &slot_config),
-        TAG, "I2S slot reconfiguration failed");
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx_channel),
-                        TAG, "I2S enable failed");
-    return ESP_OK;
+    int16_t silence[AUDIO_BUFFER_FRAMES * 2] = {0};
+    size_t bytes_written = 0;
+    (void)i2s_channel_write(s_tx_channel, silence, sizeof(silence),
+                            &bytes_written, portMAX_DELAY);
 }
 
 static void audio_task(void *argument)
 {
     (void)argument;
 
-    tone_command_t tone;
-    /* Large enough for 128 stereo frames in either 16- or 32-bit mode. */
-    int32_t sample_storage[AUDIO_BUFFER_FRAMES * 2];
+    copet_audio_event_t event;
+    int16_t stereo_samples[AUDIO_BUFFER_FRAMES * 2];
 
     while (true) {
-        xQueueReceive(s_tone_queue, &tone, portMAX_DELAY);
-
-        const esp_err_t profile_result = audio_apply_profile(tone.profile);
-        if (profile_result != ESP_OK) {
-            ESP_LOGE(TAG, "Skipping tone: profile setup failed");
+        xQueueReceive(s_event_queue, &event, portMAX_DELAY);
+        if (!s_enabled) {
             continue;
         }
 
-        const uint32_t sample_rate = profile_sample_rate(tone.profile);
-        const i2s_data_bit_width_t bit_width =
-            profile_bit_width(tone.profile);
-        const uint32_t total_frames =
-            (sample_rate * tone.duration_ms) / 1000U;
-        const uint32_t phase_step =
-            (uint32_t)(((uint64_t)tone.frequency_hz << 32) /
-                       sample_rate);
-        uint32_t phase = 0;
-        uint32_t frames_remaining = total_frames;
+        audio_clip_t clip;
+        if (!get_clip(event, &clip) || clip.end <= clip.start) {
+            ESP_LOGE(TAG, "Invalid embedded audio event: %d", event);
+            continue;
+        }
 
-        ESP_LOGI(TAG, "TEST %s: %u Hz for %u ms",
-                 profile_name(tone.profile), tone.frequency_hz,
-                 tone.duration_ms);
+        const esp_err_t enable_result = i2s_channel_enable(s_tx_channel);
+        if (enable_result != ESP_OK) {
+            ESP_LOGE(TAG, "I2S start failed for %s: %s", clip.name,
+                     esp_err_to_name(enable_result));
+            continue;
+        }
 
-        while (frames_remaining > 0) {
-            const uint32_t frame_count =
-                frames_remaining < AUDIO_BUFFER_FRAMES
-                    ? frames_remaining
+        const size_t byte_count = (size_t)(clip.end - clip.start);
+        const size_t mono_samples = byte_count / sizeof(int16_t);
+        size_t sample_offset = 0;
+        ESP_LOGI(TAG, "Playing %s: %u ms", clip.name,
+                 (unsigned)((mono_samples * 1000U) / AUDIO_SAMPLE_RATE));
+
+        while (sample_offset < mono_samples && s_enabled) {
+            const size_t frames =
+                mono_samples - sample_offset < AUDIO_BUFFER_FRAMES
+                    ? mono_samples - sample_offset
                     : AUDIO_BUFFER_FRAMES;
-
-            if (bit_width == I2S_DATA_BIT_WIDTH_16BIT) {
-                int16_t *samples = (int16_t *)sample_storage;
-                for (uint32_t frame = 0; frame < frame_count; ++frame) {
-                    const int16_t sample =
-                        (phase & 0x80000000U) != 0
-                            ? AUDIO_AMPLITUDE_16
-                            : -AUDIO_AMPLITUDE_16;
-                    samples[frame * 2] = sample;
-                    samples[frame * 2 + 1] = sample;
-                    phase += phase_step;
-                }
-            } else {
-                for (uint32_t frame = 0; frame < frame_count; ++frame) {
-                    const int32_t sample =
-                        (phase & 0x80000000U) != 0
-                            ? AUDIO_AMPLITUDE_32
-                            : -AUDIO_AMPLITUDE_32;
-                    sample_storage[frame * 2] = sample;
-                    sample_storage[frame * 2 + 1] = sample;
-                    phase += phase_step;
-                }
+            for (size_t frame = 0; frame < frames; ++frame) {
+                const uint8_t *source =
+                    clip.start + (sample_offset + frame) * sizeof(int16_t);
+                const int16_t sample = read_scaled_sample(source);
+                stereo_samples[frame * 2] = sample;
+                stereo_samples[frame * 2 + 1] = sample;
             }
 
             size_t bytes_written = 0;
             const size_t bytes_to_write =
-                frame_count * 2 *
-                (bit_width == I2S_DATA_BIT_WIDTH_16BIT
-                     ? sizeof(int16_t)
-                     : sizeof(int32_t));
-            const esp_err_t result =
-                i2s_channel_write(s_tx_channel, sample_storage,
-                                  bytes_to_write,
-                                  &bytes_written, portMAX_DELAY);
+                frames * 2U * sizeof(stereo_samples[0]);
+            const esp_err_t result = i2s_channel_write(
+                s_tx_channel, stereo_samples, bytes_to_write,
+                &bytes_written, portMAX_DELAY);
             if (result != ESP_OK || bytes_written != bytes_to_write) {
-                ESP_LOGE(TAG, "I2S write failed: %s",
+                ESP_LOGE(TAG, "PCM write failed: %s",
                          esp_err_to_name(result));
                 break;
             }
-            frames_remaining -= frame_count;
+            sample_offset += frames;
         }
 
-        memset(sample_storage, 0, sizeof(sample_storage));
-        size_t bytes_written = 0;
-        const size_t silence_bytes =
-            AUDIO_BUFFER_FRAMES * 2 *
-            (bit_width == I2S_DATA_BIT_WIDTH_16BIT
-                 ? sizeof(int16_t)
-                 : sizeof(int32_t));
-        (void)i2s_channel_write(s_tx_channel, sample_storage, silence_bytes,
-                                &bytes_written, portMAX_DELAY);
-        ESP_LOGI(TAG, "TEST finished");
-        vTaskDelay(pdMS_TO_TICKS(700));
+        write_silence();
+        /* One DMA buffer is 8 ms at 16 kHz; let silence reach the amp. */
+        vTaskDelay(pdMS_TO_TICKS(12));
+        const esp_err_t disable_result = i2s_channel_disable(s_tx_channel);
+        if (disable_result != ESP_OK) {
+            ESP_LOGE(TAG, "I2S stop failed after %s: %s", clip.name,
+                     esp_err_to_name(disable_result));
+        }
+        ESP_LOGI(TAG, "%s %s", clip.name,
+                 sample_offset == mono_samples ? "finished" : "stopped");
     }
 }
 
@@ -193,9 +177,9 @@ esp_err_t copet_audio_init(void)
         TAG, "I2S channel allocation failed");
 
     const i2s_std_config_t standard_config = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(48000),
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-            I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
+            I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = AUDIO_PIN_BCLK,
@@ -212,12 +196,10 @@ esp_err_t copet_audio_init(void)
     ESP_RETURN_ON_ERROR(
         i2s_channel_init_std_mode(s_tx_channel, &standard_config),
         TAG, "I2S standard mode initialization failed");
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx_channel),
-                        TAG, "I2S channel enable failed");
 
-    s_tone_queue = xQueueCreate(8, sizeof(tone_command_t));
-    ESP_RETURN_ON_FALSE(s_tone_queue != NULL, ESP_ERR_NO_MEM, TAG,
-                        "Tone queue allocation failed");
+    s_event_queue = xQueueCreate(8, sizeof(copet_audio_event_t));
+    ESP_RETURN_ON_FALSE(s_event_queue != NULL, ESP_ERR_NO_MEM, TAG,
+                        "Audio event queue allocation failed");
 
     const BaseType_t task_created =
         xTaskCreate(audio_task, "copet_audio", 3072, NULL, 4, NULL);
@@ -225,59 +207,38 @@ esp_err_t copet_audio_init(void)
                         "Audio task creation failed");
 
     ESP_LOGI(TAG,
-             "MAX98357A diagnostic ready: BCLK=%d LRC=%d DIN=%d",
+             "PCM audio ready: 16 kHz mono clips, BCLK=%d LRC=%d DIN=%d",
              AUDIO_PIN_BCLK, AUDIO_PIN_LRC, AUDIO_PIN_DOUT);
     return ESP_OK;
 }
 
-esp_err_t copet_audio_play_tone(uint16_t frequency_hz,
-                                uint16_t duration_ms)
+void copet_audio_set_enabled(bool enabled)
 {
-    ESP_RETURN_ON_FALSE(s_tone_queue != NULL, ESP_ERR_INVALID_STATE, TAG,
-                        "Audio is not initialized");
-    ESP_RETURN_ON_FALSE(
-        frequency_hz >= 50 && frequency_hz <= 4000 &&
-            duration_ms > 0 && duration_ms <= 10000,
-        ESP_ERR_INVALID_ARG, TAG, "Invalid tone parameters");
-
-    const tone_command_t command = {
-        .frequency_hz = frequency_hz,
-        .duration_ms = duration_ms,
-        .profile = AUDIO_PROFILE_48K_32BIT,
-    };
-    return xQueueSend(s_tone_queue, &command, 0) == pdTRUE
-               ? ESP_OK
-               : ESP_ERR_TIMEOUT;
+    s_enabled = enabled;
+    if (!enabled && s_event_queue != NULL) {
+        xQueueReset(s_event_queue);
+    }
+    ESP_LOGI(TAG, "Sound %s", enabled ? "enabled" : "disabled");
 }
 
-esp_err_t copet_audio_run_diagnostic(void)
+bool copet_audio_is_enabled(void)
 {
-    ESP_RETURN_ON_FALSE(s_tone_queue != NULL, ESP_ERR_INVALID_STATE, TAG,
+    return s_enabled;
+}
+
+esp_err_t copet_audio_play_event(copet_audio_event_t event)
+{
+    audio_clip_t clip;
+    ESP_RETURN_ON_FALSE(get_clip(event, &clip), ESP_ERR_INVALID_ARG, TAG,
+                        "Unknown audio event");
+    ESP_RETURN_ON_FALSE(s_event_queue != NULL, ESP_ERR_INVALID_STATE, TAG,
                         "Audio is not initialized");
-
-    static const tone_command_t tests[] = {
-        {
-            .frequency_hz = 500,
-            .duration_ms = 3000,
-            .profile = AUDIO_PROFILE_16K_16BIT,
-        },
-        {
-            .frequency_hz = 1000,
-            .duration_ms = 3000,
-            .profile = AUDIO_PROFILE_44K1_16BIT,
-        },
-        {
-            .frequency_hz = 1500,
-            .duration_ms = 3000,
-            .profile = AUDIO_PROFILE_48K_32BIT,
-        },
-    };
-
-    for (size_t index = 0; index < sizeof(tests) / sizeof(tests[0]);
-         ++index) {
-        ESP_RETURN_ON_FALSE(
-            xQueueSend(s_tone_queue, &tests[index], 0) == pdTRUE,
-            ESP_ERR_TIMEOUT, TAG, "Diagnostic queue is full");
+    if (!s_enabled) {
+        return ESP_OK;
     }
+    if (xQueueSend(s_event_queue, &event, 0) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    ESP_LOGI(TAG, "Queued %s", clip.name);
     return ESP_OK;
 }

@@ -1,11 +1,13 @@
 #include "ui/focus_ui.h"
+#include "ui/pip_face_port.h"
 #include "ui/ui_canvas.h"
 
 #include <stddef.h>
 #include <stdio.h>
 
 void focus_ui_render(uint8_t *framebuffer, int width, int height,
-                     const focus_mode_t *focus)
+                     const focus_mode_t *focus,
+                     const copet_behavior_view_t *behavior)
 {
     if (framebuffer == NULL || focus == NULL || width <= 0 || height <= 0) {
         return;
@@ -35,6 +37,9 @@ void focus_ui_render(uint8_t *framebuffer, int width, int height,
         ui_draw_text(&canvas, 14, 46, ">", 3, muted);
         ui_draw_text(&canvas, 30, 46, focus_mode_status_label(focus), 3, pale);
     }
+    ui_fill_rect(&canvas, 176, 39, 54, 28, background);
+    pip_face_port_render_compact(framebuffer, width, height,
+                                 178, 40, 50, 26, behavior);
 
     ui_draw_terminal_outline(&canvas, 6, 77, 228, 94, grid);
     for (int x = 42; x < 234; x += 36) {

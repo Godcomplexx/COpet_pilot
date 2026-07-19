@@ -1,9 +1,9 @@
 # MPU6050 learning log
 
-Date: 2026-07-02
+Date: 2026-07-18
 
-Status: deferred until the module is available. The prepared driver is not
-part of the active firmware build.
+Status: hardware communication and tilt reaction verified on the active
+firmware build.
 
 ## What we are trying to prove
 
@@ -14,7 +14,7 @@ acceleration and gyroscope samples.
 
 I2C at 100 kHz:
 
-| Signal | ESP32 DevKit | MPU6050 |
+| Signal | ESP32 DevKit | IMU module |
 |---|---:|---|
 | Power | 3V3 | VCC |
 | Ground | GND | GND |
@@ -36,6 +36,19 @@ I2C at 100 kHz:
 - Move it quickly: gyroscope threshold changes state to `MOVED`.
 - SHT31 must continue updating on the same bus.
 
+Actual result on 2026-07-18:
+
+```text
+MPU6500-compatible IMU detected at 0x68, WHO_AM_I=0x70
+MPU6050 motion reactions enabled at 0x68
+Motion reaction event: 2
+```
+
+The module sold as MPU6050 identifies itself as MPU6500-compatible. The base
+accelerometer/gyroscope register layout used by this test is compatible. Event
+`2` is the Desk Mode tilt reaction. SHT31 continued reading at address `0x44`
+on the same bus.
+
 ## Common failures
 
 - `MPU NOT FOUND`: power, SDA/SCL, shared ground, or wrong module.
@@ -45,4 +58,5 @@ I2C at 100 kHz:
 ## What was learned
 
 Multiple addressed devices can share SDA and SCL. Device identity must be
-verified before interpreting register data.
+verified before interpreting register data. A breakout board's product name
+is not sufficient proof of the exact chip variant.

@@ -9,15 +9,20 @@ void focus_mode_init(focus_mode_t *focus)
     focus->last_tick_us = 0;
 }
 
-bool focus_mode_toggle(focus_mode_t *focus, int64_t now_us)
+focus_toggle_result_t focus_mode_toggle(focus_mode_t *focus, int64_t now_us)
 {
     if (focus->state == FOCUS_TIMER_RUNNING) {
         focus->state = FOCUS_TIMER_PAUSED;
-    } else {
-        focus->state = FOCUS_TIMER_RUNNING;
-        focus->last_tick_us = now_us;
+        return FOCUS_TOGGLE_PAUSED;
     }
-    return true;
+
+    const focus_toggle_result_t result =
+        focus->state == FOCUS_TIMER_READY
+            ? FOCUS_TOGGLE_STARTED
+            : FOCUS_TOGGLE_RESUMED;
+    focus->state = FOCUS_TIMER_RUNNING;
+    focus->last_tick_us = now_us;
+    return result;
 }
 
 bool focus_mode_tick(focus_mode_t *focus, int64_t now_us)

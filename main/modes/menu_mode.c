@@ -2,12 +2,12 @@
 
 /*
  * Only shipped, working screens appear here. Hidden features (ASSISTANT,
- * MINI TV) and diagnostic-only paths (PHONE BRIDGE, AUDIO LOOPBACK) stay out
- * of the product menu until they are ready.
+ * MINI TV) and diagnostic-only paths (PHONE BRIDGE) stay out of the product
+ * menu until they are ready. Hardware diagnostics are kept outside the
+ * product menu after their standalone checks pass.
  */
 static const menu_item_t MENU_ITEMS[] = {
     {"FOCUS", "25/5 TIMER", COPET_MODE_FOCUS},
-    {"ANIMATION", "LOCAL GALLERY", COPET_MODE_ANIMATION},
     {"SETTINGS", "DEVICE STATUS", COPET_MODE_SETTINGS},
 };
 

@@ -3,7 +3,6 @@
 
 #include <stdint.h>
 
-#include "drivers/audio_loopback.h"
 #include "drivers/copet_ble.h"
 
 /*
@@ -13,7 +12,4 @@
 void diag_ui_render_phone_bridge(uint8_t *framebuffer, int width, int height,
                                  copet_ble_status_t status,
                                  const char *received_message);
-void diag_ui_render_audio(uint8_t *framebuffer, int width, int height,
-                          audio_loopback_status_t status, uint8_t level);
-
 #endif

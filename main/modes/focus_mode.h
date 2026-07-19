@@ -15,6 +15,12 @@ typedef enum {
     FOCUS_TIMER_PAUSED,
 } focus_timer_state_t;
 
+typedef enum {
+    FOCUS_TOGGLE_STARTED,
+    FOCUS_TOGGLE_PAUSED,
+    FOCUS_TOGGLE_RESUMED,
+} focus_toggle_result_t;
+
 typedef struct {
     focus_timer_state_t state;
     bool break_phase;
@@ -27,11 +33,11 @@ typedef struct {
 void focus_mode_init(focus_mode_t *focus);
 
 /*
- * Short touch: start a ready/paused timer, or pause a running one. The current
- * time is only used when the timer starts, to anchor the next tick. Returns
- * true when the visible state changed (always true today).
+ * Short touch: start a ready timer, pause a running timer, or resume a paused
+ * timer. The result lets the integration layer attach one sound to the exact
+ * transition without duplicating timer-state logic.
  */
-bool focus_mode_toggle(focus_mode_t *focus, int64_t now_us);
+focus_toggle_result_t focus_mode_toggle(focus_mode_t *focus, int64_t now_us);
 
 /*
  * Advance a running timer to now_us. Completed phases flip work<->break,

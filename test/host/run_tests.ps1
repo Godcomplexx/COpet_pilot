@@ -19,9 +19,12 @@ New-Item -ItemType Directory -Force $out | Out-Null
 
 # suite name -> module sources it needs (relative to main/)
 $suites = @{
+    "test_copet_behavior"  = @("core\copet_behavior.c")
     "test_focus_mode"     = @("modes\focus_mode.c")
     "test_menu_mode"      = @("modes\menu_mode.c")
     "test_animation_mode" = @("modes\animation_mode.c")
+    "test_desk_mode"      = @("modes\desk_mode.c")
+    "test_settings_mode"  = @("modes\settings_mode.c")
 }
 
 function Resolve-Cl {

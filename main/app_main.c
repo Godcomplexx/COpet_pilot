@@ -17,18 +17,19 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "core/copet_behavior.h"
 #include "core/copet_modes.h"
-#include "drivers/audio_loopback.h"
 #include "drivers/copet_ble.h"
+#include "drivers/copet_audio.h"
 #include "drivers/mpu6050.h"
 #include "drivers/touch_button.h"
-#include "modes/animation_mode.h"
 #include "modes/desk_mode.h"
 #include "modes/focus_mode.h"
 #include "modes/menu_mode.h"
+#include "modes/settings_mode.h"
 #include "services/weather_service.h"
 #include "services/wifi_service.h"
-#include "ui/animation_ui.h"
+#include "ui/boot_ui.h"
 #include "ui/desk_ui.h"
 #include "ui/diag_ui.h"
 #include "ui/focus_ui.h"
@@ -65,6 +66,8 @@ enum {
     LCD_TRANSFER_ROWS = 16,
     DESK_FRAME_INTERVAL_US = 125000,
     MENU_TIMEOUT_US = 10000000,
+    BOOT_STAGE_HOLD_MS = 80,
+    BOOT_FINAL_HOLD_MS = 250,
 };
 
 #define LCD_HOST SPI2_HOST
@@ -85,11 +88,6 @@ static uint16_t *s_lcd_transfer_buffer;
 static i2c_master_bus_handle_t s_i2c_bus;
 static i2c_master_dev_handle_t s_sht31_primary;
 static i2c_master_dev_handle_t s_sht31_secondary;
-
-extern const uint8_t s_animation_data_start[]
-    asm("_binary_copet_animation_2bpp_bin_start");
-extern const uint8_t s_animation_data_end[]
-    asm("_binary_copet_animation_2bpp_bin_end");
 
 static volatile int32_t s_encoder_position;
 static volatile uint8_t s_encoder_ab;
@@ -287,24 +285,14 @@ static esp_err_t lcd_refresh(void)
     return ESP_OK;
 }
 
-static void lcd_color_test(void)
+static void show_boot_progress(uint8_t progress_percent, const char *status,
+                               uint32_t hold_ms)
 {
-    ui_canvas_t canvas = {s_framebuffer, LCD_WIDTH, LCD_HEIGHT};
-    const struct {
-        const char *name;
-        ui_color_t color;
-    } colors[] = {
-        {"RED", ui_rgb332(255, 0, 0)},
-        {"GREEN", ui_rgb332(0, 255, 0)},
-        {"BLUE", ui_rgb332(0, 0, 255)},
-        {"WHITE", ui_rgb332(255, 255, 255)},
-    };
-
-    for (size_t i = 0; i < sizeof(colors) / sizeof(colors[0]); ++i) {
-        ESP_LOGI(TAG, "LCD color test: %s", colors[i].name);
-        ui_fill_rect(&canvas, 0, 0, LCD_WIDTH, LCD_HEIGHT, colors[i].color);
-        ESP_ERROR_CHECK(lcd_refresh());
-        vTaskDelay(pdMS_TO_TICKS(1000));
+    boot_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
+                   progress_percent, status);
+    ESP_ERROR_CHECK(lcd_refresh());
+    if (hold_ms > 0U) {
+        vTaskDelay(pdMS_TO_TICKS(hold_ms));
     }
 }
 
@@ -481,47 +469,94 @@ static void encoder_task(void *argument)
     }
 }
 
+static void play_audio_event(bool audio_available,
+                             copet_audio_event_t event)
+{
+    if (!audio_available) {
+        return;
+    }
+    const esp_err_t result = copet_audio_play_event(event);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Audio event %d skipped: %s", event,
+                 esp_err_to_name(result));
+    }
+}
+
+static void post_behavior(copet_behavior_t *behavior,
+                          copet_behavior_event_type_t type,
+                          int32_t value,
+                          uint32_t now_ms)
+{
+    const copet_behavior_event_t event = {
+        .type = type,
+        .value = value,
+    };
+    copet_behavior_post(behavior, &event, now_ms);
+}
+
+static copet_behavior_focus_state_t behavior_focus_state(
+    copet_mode_t mode, const focus_mode_t *focus)
+{
+    if (mode != COPET_MODE_FOCUS || focus == NULL) {
+        return COPET_BEHAVIOR_FOCUS_OFF;
+    }
+    if (focus->break_phase) {
+        if (focus->state == FOCUS_TIMER_RUNNING) {
+            return COPET_BEHAVIOR_FOCUS_RUNNING_BREAK;
+        }
+        return focus->state == FOCUS_TIMER_PAUSED
+            ? COPET_BEHAVIOR_FOCUS_PAUSED_BREAK
+            : COPET_BEHAVIOR_FOCUS_READY_BREAK;
+    }
+    if (focus->state == FOCUS_TIMER_RUNNING) {
+        return COPET_BEHAVIOR_FOCUS_RUNNING_WORK;
+    }
+    return focus->state == FOCUS_TIMER_PAUSED
+        ? COPET_BEHAVIOR_FOCUS_PAUSED_WORK
+        : COPET_BEHAVIOR_FOCUS_READY_WORK;
+}
+
+static bool wifi_status_is_connecting(wifi_service_status_t status)
+{
+    return status == WIFI_SERVICE_STARTING ||
+           status == WIFI_SERVICE_CONNECTING ||
+           status == WIFI_SERVICE_RETRY_WAIT;
+}
+
 static void render_active_mode(copet_mode_t mode, const desk_mode_t *desk,
                                const menu_mode_t *menu,
                                const focus_mode_t *focus,
-                               const animation_mode_t *animation,
+                               const settings_mode_t *settings,
+                               const copet_behavior_view_t *behavior,
                                const char *network_status,
                                const weather_service_snapshot_t *weather,
                                desk_ui_environment_t environment,
                                copet_ble_status_t ble_status,
-                               const char *ble_message,
-                               audio_loopback_status_t audio_status,
-                               uint8_t audio_level)
+                               const char *ble_message)
 {
     switch (mode) {
     case COPET_MODE_DESK:
         desk_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
-                       desk_mode_get_view(desk), network_status, weather,
-                       environment);
+                       desk_mode_get_view(desk), behavior, network_status,
+                       weather, environment);
         break;
     case COPET_MODE_SETTINGS:
         settings_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
-                           desk_mode_get_view(desk), network_status, weather);
+                           desk_mode_get_view(desk), settings, behavior,
+                           network_status, weather);
         break;
     case COPET_MODE_FOCUS:
-        focus_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT, focus);
+        focus_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT, focus,
+                        behavior);
         break;
     case COPET_MODE_PHONE_BRIDGE:
         diag_ui_render_phone_bridge(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
                                     ble_status, ble_message);
         break;
-    case COPET_MODE_AUDIO_TEST:
-        diag_ui_render_audio(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
-                             audio_status, audio_level);
-        break;
-    case COPET_MODE_ANIMATION:
-        animation_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
-                            s_animation_data_start, animation->frame);
-        break;
     case COPET_MODE_MENU:
     default:
         menu_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT, menu,
-                       network_status);
+                       behavior, network_status);
         break;
     }
 }
@@ -532,9 +567,10 @@ void app_main(void)
     ESP_LOGI(TAG, "Board target: ESP32-WROOM-32");
 
     ESP_ERROR_CHECK(lcd_init());
-    lcd_color_test();
+    show_boot_progress(10, "DISPLAY READY", BOOT_STAGE_HOLD_MS);
     ESP_ERROR_CHECK(i2c_init());
     ESP_ERROR_CHECK(touch_button_init());
+    show_boot_progress(35, "INPUT READY", BOOT_STAGE_HOLD_MS);
     uint8_t mpu6050_address = 0;
     const esp_err_t mpu6050_init_result =
         mpu6050_init(s_i2c_bus, &mpu6050_address);
@@ -545,6 +581,7 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "MPU6050 not found; motion reactions are waiting for hardware");
     }
+    show_boot_progress(55, "SENSORS CHECKED", BOOT_STAGE_HOLD_MS);
     const esp_err_t wifi_init_result = wifi_service_start();
     if (wifi_init_result != ESP_OK) {
         ESP_LOGE(TAG, "Wi-Fi unavailable: %s",
@@ -555,6 +592,7 @@ void app_main(void)
         ESP_LOGE(TAG, "Outdoor weather unavailable: %s",
                  esp_err_to_name(weather_init_result));
     }
+    show_boot_progress(75, "NETWORK STARTED", BOOT_STAGE_HOLD_MS);
 #if CONFIG_COPET_DIAGNOSTIC_BLE_ENABLED
     const esp_err_t ble_init_result = copet_ble_init();
     const bool ble_available = ble_init_result == ESP_OK;
@@ -566,12 +604,13 @@ void app_main(void)
     const bool ble_available = false;
     ESP_LOGI(TAG, "Diagnostic BLE disabled; RAM reserved for network services");
 #endif
-    const esp_err_t audio_init_result = audio_loopback_init();
+    const esp_err_t audio_init_result = copet_audio_init();
     const bool audio_available = audio_init_result == ESP_OK;
     if (!audio_available) {
-        ESP_LOGE(TAG, "Audio loopback unavailable: %s",
+        ESP_LOGE(TAG, "Product audio unavailable: %s",
                  esp_err_to_name(audio_init_result));
     }
+    show_boot_progress(90, "SERVICES CHECKED", BOOT_STAGE_HOLD_MS);
 
     BaseType_t task_created =
         xTaskCreate(encoder_task, "encoder", 2048, NULL, 5, NULL);
@@ -589,30 +628,38 @@ void app_main(void)
     desk_mode_t desk;
     menu_mode_t menu;
     focus_mode_t focus;
-    animation_mode_t animation = {0};
+    settings_mode_t settings;
+    copet_behavior_t behavior;
     copet_ble_status_t displayed_ble_status = COPET_BLE_OFF;
     char ble_message[65] = "NO MESSAGE";
-    int64_t next_audio_ui_us = 0;
     int64_t next_desk_frame_us = 0;
     int64_t menu_last_activity_us = 0;
     int64_t next_mpu6050_read_us = 0;
     desk_motion_event_t displayed_motion_event = DESK_MOTION_NONE;
     int displayed_expression = -1;
     int displayed_vibe = -1;
+    int displayed_behavior = -1;
+    copet_behavior_focus_state_t published_focus_state =
+        COPET_BEHAVIOR_FOCUS_OFF;
     wifi_service_status_t displayed_wifi_status = WIFI_SERVICE_OFF;
     weather_service_snapshot_t weather = {0};
     uint32_t displayed_weather_revision = UINT32_MAX;
     desk_ui_environment_t desk_environment = DESK_UI_ENVIRONMENT_ROOM;
 
-    desk_mode_init(&desk, (uint32_t)(esp_timer_get_time() / 1000));
+    const uint32_t app_started_ms =
+        (uint32_t)(esp_timer_get_time() / 1000);
+    desk_mode_init(&desk, app_started_ms);
+    copet_behavior_init(&behavior, app_started_ms, app_started_ms);
     menu_mode_init(&menu);
     focus_mode_init(&focus);
+    settings_mode_init(&settings, true);
+    if (audio_available) {
+        copet_audio_set_enabled(settings.sound_enabled);
+    }
 
-    ESP_ERROR_CHECK((size_t)(s_animation_data_end - s_animation_data_start) ==
-                    ANIMATION_FRAME_COUNT * ANIMATION_FRAME_BYTES
-                        ? ESP_OK
-                        : ESP_ERR_INVALID_SIZE);
-
+    show_boot_progress(100, "DESK MODE", BOOT_FINAL_HOLD_MS);
+    post_behavior(&behavior, COPET_BEHAVIOR_EVENT_BOOT_COMPLETED, 0,
+                  (uint32_t)(esp_timer_get_time() / 1000));
     ESP_LOGI(TAG, "Mode: DESK");
 
     while (true) {
@@ -626,11 +673,26 @@ void app_main(void)
             ESP_LOGI(TAG, "TOUCH_SHORT");
             desk_mode_on_activity(&desk, (uint32_t)now_ms);
             if (mode == COPET_MODE_DESK) {
+                post_behavior(&behavior, COPET_BEHAVIOR_EVENT_TOUCH_SHORT,
+                              0, (uint32_t)now_ms);
+            } else if (mode == COPET_MODE_MENU ||
+                       mode == COPET_MODE_FOCUS ||
+                       mode == COPET_MODE_SETTINGS) {
+                post_behavior(&behavior, COPET_BEHAVIOR_EVENT_CONFIRM,
+                              0, (uint32_t)now_ms);
+            } else {
+                post_behavior(&behavior,
+                              COPET_BEHAVIOR_EVENT_USER_ACTIVITY,
+                              0, (uint32_t)now_ms);
+            }
+            if (mode == COPET_MODE_DESK) {
                 desk_environment =
                     desk_environment == DESK_UI_ENVIRONMENT_ROOM
                         ? DESK_UI_ENVIRONMENT_OUTDOOR
                         : DESK_UI_ENVIRONMENT_ROOM;
                 desk_mode_on_touch(&desk, (uint32_t)now_ms);
+                play_audio_event(audio_available,
+                                 COPET_AUDIO_VIEW_CHANGE);
                 ESP_LOGI(TAG, "Desk touch reaction: %s; climate view: %s",
                          desk_mode_touch_reaction_label(
                              desk_mode_get_view(&desk)->touch_reaction),
@@ -640,6 +702,8 @@ void app_main(void)
                 redraw = true;
             } else if (mode == COPET_MODE_MENU) {
                 const menu_item_t *item = menu_mode_selected(&menu);
+                play_audio_event(audio_available,
+                                 COPET_AUDIO_MENU_CONFIRM);
                 mode = item->mode;
                 ESP_LOGI(TAG, "Mode opened: %s", item->label);
                 if (mode == COPET_MODE_PHONE_BRIDGE && ble_available) {
@@ -648,32 +712,45 @@ void app_main(void)
                         ESP_LOGE(TAG, "BLE advertising failed: %s",
                                  esp_err_to_name(result));
                     }
-                } else if (mode == COPET_MODE_AUDIO_TEST &&
-                           audio_available) {
-                    audio_loopback_start();
-                } else if (mode == COPET_MODE_ANIMATION) {
-                    animation_mode_start(&animation, now_us);
                 }
             } else if (mode == COPET_MODE_FOCUS) {
-                focus_mode_toggle(&focus, now_us);
-                if (focus.state == FOCUS_TIMER_PAUSED) {
+                const focus_toggle_result_t toggle_result =
+                    focus_mode_toggle(&focus, now_us);
+                if (toggle_result == FOCUS_TOGGLE_STARTED ||
+                    toggle_result == FOCUS_TOGGLE_RESUMED) {
+                    play_audio_event(audio_available,
+                                     COPET_AUDIO_FOCUS_START);
+                } else {
+                    play_audio_event(audio_available,
+                                     COPET_AUDIO_FOCUS_PAUSE);
+                }
+                if (toggle_result == FOCUS_TOGGLE_PAUSED) {
                     ESP_LOGI(TAG, "Focus timer paused at %lu seconds",
                              (unsigned long)focus.remaining_seconds);
                 } else {
-                    ESP_LOGI(TAG, "Focus timer started: %s",
+                    ESP_LOGI(TAG, "Focus timer %s: %s",
+                             toggle_result == FOCUS_TOGGLE_RESUMED
+                                 ? "resumed"
+                                 : "started",
                              focus.break_phase ? "BREAK" : "WORK");
                 }
+            } else if (mode == COPET_MODE_SETTINGS) {
+                const bool enabled = settings_mode_toggle_sound(&settings);
+                if (audio_available) {
+                    copet_audio_set_enabled(enabled);
+                }
+                ESP_LOGI(TAG, "Sound setting: %s",
+                         settings_mode_sound_label(&settings));
             }
             force_redraw = true;
         } else if (touch_event == TOUCH_BUTTON_EVENT_LONG) {
             ESP_LOGI(TAG, "TOUCH_LONG");
             desk_mode_on_activity(&desk, (uint32_t)now_ms);
+            post_behavior(&behavior, COPET_BEHAVIOR_EVENT_USER_ACTIVITY,
+                          0, (uint32_t)now_ms);
             if (mode != COPET_MODE_DESK) {
                 if (mode == COPET_MODE_PHONE_BRIDGE && ble_available) {
                     copet_ble_stop();
-                }
-                if (mode == COPET_MODE_AUDIO_TEST && audio_available) {
-                    audio_loopback_stop();
                 }
                 if (mode == COPET_MODE_FOCUS) {
                     focus_mode_pause(&focus);
@@ -716,8 +793,36 @@ void app_main(void)
                         sample.gyro_x_dps, sample.gyro_y_dps,
                         sample.gyro_z_dps, (uint32_t)now_ms);
                 if (motion_event != displayed_motion_event) {
-                    ESP_LOGI(TAG, "Motion reaction event: %d", motion_event);
+                    ESP_LOGI(TAG,
+                             "Motion reaction: %s; "
+                             "accel=(%.2f, %.2f, %.2f) g; "
+                             "gyro=(%.1f, %.1f, %.1f) dps",
+                             desk_mode_motion_label(motion_event),
+                             (double)sample.accel_x_g,
+                             (double)sample.accel_y_g,
+                             (double)sample.accel_z_g,
+                             (double)sample.gyro_x_dps,
+                             (double)sample.gyro_y_dps,
+                             (double)sample.gyro_z_dps);
                     displayed_motion_event = motion_event;
+                    if (motion_event == DESK_MOTION_FALLING) {
+                        post_behavior(
+                            &behavior,
+                            COPET_BEHAVIOR_EVENT_MOTION_FALLING,
+                            0, (uint32_t)now_ms);
+                    } else if (motion_event == DESK_MOTION_SHAKEN) {
+                        post_behavior(
+                            &behavior,
+                            COPET_BEHAVIOR_EVENT_MOTION_SHAKEN_STRONG,
+                            0, (uint32_t)now_ms);
+                    } else if (motion_event == DESK_MOTION_TILTED) {
+                        post_behavior(
+                            &behavior,
+                            sample.accel_x_g < 0.0f
+                                ? COPET_BEHAVIOR_EVENT_MOTION_TILT_LEFT
+                                : COPET_BEHAVIOR_EVENT_MOTION_TILT_RIGHT,
+                            0, (uint32_t)now_ms);
+                    }
                 }
                 if (mode == COPET_MODE_DESK) { redraw = true; }
             } else {
@@ -741,6 +846,8 @@ void app_main(void)
                     } else if (!focus.break_phase && was_break) {
                         ESP_LOGI(TAG, "Break complete; work ready");
                     }
+                    play_audio_event(audio_available,
+                                     COPET_AUDIO_FOCUS_COMPLETE);
                 }
                 redraw = true;
             }
@@ -761,22 +868,6 @@ void app_main(void)
             }
         }
 
-        const audio_loopback_status_t audio_status =
-            audio_available ? audio_loopback_get_status()
-                            : AUDIO_LOOPBACK_ERROR;
-        const uint8_t audio_level =
-            audio_available ? audio_loopback_get_level() : 0;
-        if (mode == COPET_MODE_AUDIO_TEST &&
-            now_us >= next_audio_ui_us) {
-            next_audio_ui_us = now_us + 200000;
-            redraw = true;
-        }
-
-        if (mode == COPET_MODE_ANIMATION &&
-            animation_mode_tick(&animation, now_us)) {
-            redraw = true;
-        }
-
         desk_mode_update(&desk, (uint32_t)now_ms);
         const desk_mode_view_t *desk_view = desk_mode_get_view(&desk);
         if ((int)desk_view->expression != displayed_expression ||
@@ -788,7 +879,12 @@ void app_main(void)
                      desk_mode_vibe_label(desk_view->vibe),
                      (unsigned long)desk_view->inactivity_seconds);
         }
-        if (mode == COPET_MODE_DESK && now_us >= next_desk_frame_us) {
+        const bool animate_menu_behavior =
+            mode == COPET_MODE_MENU &&
+            displayed_behavior > COPET_BEHAVIOR_NEUTRAL;
+        if ((mode == COPET_MODE_DESK || mode == COPET_MODE_FOCUS ||
+             mode == COPET_MODE_SETTINGS || animate_menu_behavior) &&
+            now_us >= next_desk_frame_us) {
             next_desk_frame_us = now_us + DESK_FRAME_INTERVAL_US;
             redraw = true;
         }
@@ -797,6 +893,9 @@ void app_main(void)
             wifi_service_get_status();
         if (wifi_status != displayed_wifi_status) {
             displayed_wifi_status = wifi_status;
+            post_behavior(&behavior, COPET_BEHAVIOR_EVENT_WIFI_CHANGED,
+                          wifi_status_is_connecting(wifi_status) ? 1 : 0,
+                          (uint32_t)now_ms);
             ESP_LOGI(TAG, "Wi-Fi UI status: %s",
                      wifi_service_status_label(wifi_status));
             if (mode == COPET_MODE_DESK || mode == COPET_MODE_MENU ||
@@ -824,6 +923,14 @@ void app_main(void)
                 displayed_encoder_position != INT32_MIN;
             if (real_step) {
                 desk_mode_on_activity(&desk, (uint32_t)now_ms);
+                const int32_t behavior_steps =
+                    encoder_position - displayed_encoder_position;
+                post_behavior(
+                    &behavior,
+                    behavior_steps < 0
+                        ? COPET_BEHAVIOR_EVENT_ENCODER_LEFT
+                        : COPET_BEHAVIOR_EVENT_ENCODER_RIGHT,
+                    behavior_steps, (uint32_t)now_ms);
             }
             if (real_step && mode == COPET_MODE_DESK) {
                 const int32_t logical_steps =
@@ -831,6 +938,7 @@ void app_main(void)
                 menu_mode_scroll(&menu, logical_steps);
                 mode = COPET_MODE_MENU;
                 menu_last_activity_us = now_us;
+                play_audio_event(audio_available, COPET_AUDIO_MENU_MOVE);
                 ESP_LOGI(TAG, "Mode: MENU, selected: %s",
                          menu_mode_selected(&menu)->label);
                 force_redraw = true;
@@ -838,6 +946,7 @@ void app_main(void)
                 const int32_t logical_steps =
                     encoder_position - displayed_encoder_position;
                 menu_mode_scroll(&menu, logical_steps);
+                play_audio_event(audio_available, COPET_AUDIO_MENU_MOVE);
                 ESP_LOGI(TAG, "Menu selected: %s",
                          menu_mode_selected(&menu)->label);
                 menu_last_activity_us = now_us;
@@ -855,11 +964,39 @@ void app_main(void)
             force_redraw = true;
         }
 
+        const copet_behavior_focus_state_t current_focus_state =
+            behavior_focus_state(mode, &focus);
+        if (current_focus_state != published_focus_state) {
+            published_focus_state = current_focus_state;
+            post_behavior(&behavior, COPET_BEHAVIOR_EVENT_FOCUS_CHANGED,
+                          current_focus_state, (uint32_t)now_ms);
+        }
+        const copet_behavior_context_t behavior_context = {
+            .desk_active = mode == COPET_MODE_DESK,
+        };
+        copet_behavior_update(&behavior, &behavior_context,
+                              (uint32_t)now_ms);
+        const copet_behavior_view_t *behavior_view =
+            copet_behavior_get_view(&behavior);
+        if ((int)behavior_view->id != displayed_behavior) {
+            const char *old_label = displayed_behavior < 0
+                ? "START"
+                : copet_behavior_label(
+                      (copet_behavior_id_t)displayed_behavior);
+            ESP_LOGI(TAG, "behavior: %s -> %s source=%s priority=P%u",
+                     old_label, copet_behavior_label(behavior_view->id),
+                     copet_behavior_source_label(behavior_view->source),
+                     (unsigned)behavior_view->priority);
+            displayed_behavior = behavior_view->id;
+            redraw = true;
+        }
+
         if (redraw || force_redraw) {
-            render_active_mode(mode, &desk, &menu, &focus, &animation,
+            render_active_mode(mode, &desk, &menu, &focus, &settings,
+                               behavior_view,
                                wifi_service_status_label(wifi_status),
                                &weather, desk_environment, ble_status,
-                               ble_message, audio_status, audio_level);
+                               ble_message);
             ESP_ERROR_CHECK(lcd_refresh());
             force_redraw = false;
         }

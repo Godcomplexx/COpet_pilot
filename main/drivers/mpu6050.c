@@ -1,5 +1,6 @@
 #include "drivers/mpu6050.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "esp_check.h"
@@ -8,6 +9,7 @@
 enum {
     MPU6050_ADDRESS_LOW = 0x68,
     MPU6050_ADDRESS_HIGH = 0x69,
+    MPU6500_WHO_AM_I = 0x70,
     MPU6050_REG_ACCEL_XOUT_H = 0x3B,
     MPU6050_REG_PWR_MGMT_1 = 0x6B,
     MPU6050_REG_WHO_AM_I = 0x75,
@@ -31,6 +33,21 @@ static esp_err_t write_register(i2c_master_dev_handle_t device,
 {
     const uint8_t command[] = {reg, value};
     return i2c_master_transmit(device, command, sizeof(command), 100);
+}
+
+static void log_i2c_scan(i2c_master_bus_handle_t bus)
+{
+    bool found = false;
+    ESP_LOGW(TAG, "MPU6050 detection failed; scanning the I2C bus");
+    for (uint16_t candidate = 0x08; candidate <= 0x77; ++candidate) {
+        if (i2c_master_probe(bus, candidate, 20) == ESP_OK) {
+            ESP_LOGW(TAG, "I2C device responds at 0x%02X", candidate);
+            found = true;
+        }
+    }
+    if (!found) {
+        ESP_LOGW(TAG, "I2C scan found no devices");
+    }
 }
 
 esp_err_t mpu6050_init(i2c_master_bus_handle_t bus, uint8_t *address)
@@ -60,22 +77,35 @@ esp_err_t mpu6050_init(i2c_master_bus_handle_t bus, uint8_t *address)
         uint8_t identity = 0;
         result = read_register(candidate, MPU6050_REG_WHO_AM_I,
                                &identity, sizeof(identity));
-        if (result == ESP_OK &&
-            (identity == MPU6050_ADDRESS_LOW ||
-             identity == MPU6050_ADDRESS_HIGH)) {
+        if (result == ESP_OK && (identity == MPU6050_ADDRESS_LOW ||
+                                 identity == MPU6050_ADDRESS_HIGH ||
+                                 identity == MPU6500_WHO_AM_I)) {
             ESP_RETURN_ON_ERROR(
                 write_register(candidate, MPU6050_REG_PWR_MGMT_1, 0x00),
                 TAG, "Failed to wake MPU6050");
             s_device = candidate;
             *address = addresses[index];
-            ESP_LOGI(TAG, "MPU6050 detected at 0x%02X, WHO_AM_I=0x%02X",
+            ESP_LOGI(TAG, "%s detected at 0x%02X, WHO_AM_I=0x%02X",
+                     identity == MPU6500_WHO_AM_I
+                         ? "MPU6500-compatible IMU"
+                         : "MPU6050",
                      *address, identity);
             return ESP_OK;
+        }
+
+        if (result == ESP_OK) {
+            ESP_LOGW(TAG,
+                     "Device at 0x%02X has unexpected WHO_AM_I=0x%02X",
+                     addresses[index], identity);
+        } else {
+            ESP_LOGW(TAG, "No MPU6050 response at 0x%02X: %s",
+                     addresses[index], esp_err_to_name(result));
         }
 
         (void)i2c_master_bus_rm_device(candidate);
     }
 
+    log_i2c_scan(bus);
     return ESP_ERR_NOT_FOUND;
 }
 

@@ -109,12 +109,13 @@ Current MVP visibility follows the same order but hides unfinished features:
 
 ```text
 FOCUS
-ANIMATION
 SETTINGS
 ```
 
 `ASSISTANT` is added after its idle/error screen and bounded text request are
-implemented. `MINI TV` remains hidden until SD hardware and playback are ready.
+implemented. The existing `ANIMATION` gallery stays in the repository but is
+excluded from firmware until SD storage is ready. `MINI TV` remains hidden
+until SD hardware and playback are ready.
 BLE and audio loopback remain developer diagnostics and are not product-menu
 items.
 

@@ -103,6 +103,7 @@ desk_comfort_t desk_mode_classify_comfort(bool sensor_ok,
 const char *desk_mode_comfort_label(desk_comfort_t comfort);
 const char *desk_mode_expression_label(desk_expression_t expression);
 const char *desk_mode_vibe_label(desk_vibe_t vibe);
+const char *desk_mode_motion_label(desk_motion_event_t event);
 const char *desk_mode_touch_reaction_label(desk_touch_reaction_t reaction);
 
 #endif

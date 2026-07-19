@@ -1,6 +1,6 @@
 # MAX98357A audio test
 
-Date: 2026-07-02
+Date: 2026-07-18
 
 ## What we are trying to prove
 
@@ -41,6 +41,10 @@ TEST finished
 ```
 
 The module is not complete until the tone is physically audible and repeatable.
+
+Actual result on 2026-07-18: the diagnostic tones were physically audible
+through the connected amplifier and speaker. The I2S transmit path and speaker
+wiring are verified.
 
 ## Common failures
 

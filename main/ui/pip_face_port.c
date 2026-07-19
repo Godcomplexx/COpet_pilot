@@ -230,6 +230,7 @@ static void cover_lid(face_canvas_t *canvas, float x, float y,
 static void draw_eye(face_canvas_t *canvas, float center_x, float center_y,
                      float width, float height, bool is_right,
                      desk_expression_t expression,
+                     copet_behavior_id_t behavior_id,
                      color_t eye_color, color_t background)
 {
     const float x = center_x - width * 0.5f;
@@ -250,6 +251,38 @@ static void draw_eye(face_canvas_t *canvas, float center_x, float center_y,
         cover_lid(canvas, x, y, width, height, is_right,
                   0.38f, 0.52f, background);
     }
+
+    if (behavior_id == COPET_BEHAVIOR_FOCUSED) {
+        cover_lid(canvas, x, y, width, height, is_right,
+                  0.08f, 0.28f, background);
+    } else if (behavior_id == COPET_BEHAVIOR_ANGRY) {
+        cover_lid(canvas, x, y, width, height, is_right,
+                  0.48f, 0.05f, background);
+    }
+}
+
+static void draw_die(face_canvas_t *canvas, float center_x, float center_y,
+                     float size, int value,
+                     color_t eye_color, color_t background)
+{
+    const float x = center_x - size * 0.5f;
+    const float y = center_y - size * 0.5f;
+    fill_round_rect(canvas, x, y, size, size, 2.0f, eye_color);
+    const float left = x + size * 0.27f;
+    const float middle = x + size * 0.50f;
+    const float right = x + size * 0.73f;
+    const float top = y + size * 0.27f;
+    const float center = y + size * 0.50f;
+    const float bottom = y + size * 0.73f;
+    const float radius = 2.2f;
+
+#define PIP(px, py) fill_ellipse(canvas, (px) - radius, (py) - radius, \
+                                 (px) + radius, (py) + radius, background)
+    if (value == 1 || value == 3 || value == 5) { PIP(middle, center); }
+    if (value >= 2) { PIP(left, top); PIP(right, bottom); }
+    if (value >= 4) { PIP(right, top); PIP(left, bottom); }
+    if (value == 6) { PIP(left, center); PIP(right, center); }
+#undef PIP
 }
 
 static void draw_z(face_canvas_t *canvas, float x, float y,
@@ -380,75 +413,97 @@ static void draw_heat(face_canvas_t *canvas, float now, color_t color)
     }
 }
 
-void pip_face_port_render(uint8_t *framebuffer, int screen_width,
-                          int screen_height, int x, int y,
-                          int width, int height,
-                          const desk_mode_view_t *view)
+typedef struct {
+    desk_expression_t expression;
+    copet_behavior_id_t behavior_id;
+    float gaze_x;
+    float gaze_y;
+    float eye_width;
+    float eye_height;
+    float left_height;
+    float right_height;
+    float left_y_offset;
+    float right_y_offset;
+    float motion_x;
+    float motion_y;
+} face_pose_t;
+
+static float behavior_progress(const copet_behavior_view_t *behavior)
 {
-    if (framebuffer == NULL || view == NULL || screen_width <= 0 ||
-        screen_height <= 0 || width <= 0 || height <= 0) {
-        return;
-    }
-    face_canvas_t canvas = {
-        framebuffer, screen_width, screen_height, x, y, width, height,
+    if (behavior == NULL || behavior->duration_ms == 0U) { return 0.0f; }
+    float progress = behavior->elapsed_ms / (float)behavior->duration_ms;
+    if (progress < 0.0f) { return 0.0f; }
+    return progress > 1.0f ? 1.0f : progress;
+}
+
+/* Layer 1: legacy Desk state supplies the base eyes and autonomous blink. */
+static face_pose_t build_base_pose(const desk_mode_view_t *view, float now)
+{
+    face_pose_t pose = {
+        .expression = DESK_EXPRESSION_NEUTRAL,
+        .behavior_id = COPET_BEHAVIOR_NEUTRAL,
+        .eye_width = 36.0f,
+        .eye_height = 36.0f,
     };
-    const color_t background = rgb332(0, 0, 0);
-    const color_t eye_color = rgb332(150, 255, 70);
+    if (view == NULL) {
+        pose.left_height = pose.eye_height;
+        pose.right_height = pose.eye_height;
+        return pose;
+    }
 
-    float now = view->animation_time_ms / 1000.0f;
-    float gaze_x = view->gaze_x;
-    float gaze_y = view->gaze_y;
-    float width_eye = 36.0f;
-    float height_eye = 36.0f;
+    pose.expression = view->expression;
+    pose.gaze_x = view->gaze_x;
+    pose.gaze_y = view->gaze_y;
+    pose.motion_y = view->bob_y * 0.6f;
     float height_multiplier = view->eye_open_percent / 100.0f;
-    float motion_x = 0.0f;
-    float motion_y = view->bob_y * 0.6f;
-
     if (view->expression == DESK_EXPRESSION_SCARED) {
-        width_eye -= 10.0f;
-        height_eye -= 4.0f;
+        pose.eye_width = 26.0f;
+        pose.eye_height = 32.0f;
     } else if (view->expression == DESK_EXPRESSION_SURPRISED) {
-        width_eye -= 4.0f;
-        height_eye += 10.0f;
+        pose.eye_width = 32.0f;
+        pose.eye_height = 46.0f;
     } else if (view->expression == DESK_EXPRESSION_CHILL) {
-        height_eye -= 4.0f;
+        pose.eye_height = 32.0f;
     } else if (view->expression == DESK_EXPRESSION_SLEEPY) {
-        height_eye = 11.0f;
+        pose.eye_height = 11.0f;
         const float phase = fmodf(now, 8.55f);
         if (phase > 5.9f && phase < 7.3f) {
-            height_eye = 1.2f;
+            pose.eye_height = 1.2f;
         }
     }
 
     if (view->vibe == DESK_VIBE_SMOKING) {
-        apply_smoking_pose(now, &gaze_x, &gaze_y, &height_multiplier);
+        apply_smoking_pose(now, &pose.gaze_x, &pose.gaze_y,
+                           &height_multiplier);
     } else if (view->vibe == DESK_VIBE_SHIVER) {
         const float progress = fmodf(view->effect_elapsed_ms / 700.0f, 1.0f);
         const float envelope = 1.0f - progress;
-        motion_x += sinf(progress * 3.14159265f * 16.0f) * 3.0f * envelope;
-        motion_y += cosf(progress * 3.14159265f * 22.0f) * 2.0f * envelope;
+        pose.motion_x += sinf(progress * 3.14159265f * 16.0f) *
+                         3.0f * envelope;
+        pose.motion_y += cosf(progress * 3.14159265f * 22.0f) *
+                         2.0f * envelope;
     } else if (view->vibe == DESK_VIBE_OVERHEATED) {
-        motion_x += sinf(now * 8.0f) * 1.4f + sinf(now * 13.0f) * 0.7f;
+        pose.motion_x += sinf(now * 8.0f) * 1.4f +
+                         sinf(now * 13.0f) * 0.7f;
     }
 
     if (view->reacting && view->reaction_elapsed_ms < 900U &&
         view->touch_reaction == DESK_TOUCH_EXCITED) {
         const float progress = view->reaction_elapsed_ms / 900.0f;
         const float envelope = 1.0f - progress;
-        motion_y -= fabsf(sinf(progress * 3.14159265f * 5.0f)) *
-                    8.0f * envelope;
-        const float swell = 1.0f + 0.22f * envelope;
-        width_eye *= swell;
-        height_eye *= swell;
+        pose.motion_y -= fabsf(sinf(progress * 3.14159265f * 5.0f)) *
+                         8.0f * envelope;
+        pose.eye_width *= 1.0f + 0.22f * envelope;
+        pose.eye_height *= 1.0f + 0.22f * envelope;
     } else if (view->reacting && view->reaction_elapsed_ms < 900U &&
                view->touch_reaction == DESK_TOUCH_HAPPY) {
         const float progress = view->reaction_elapsed_ms / 900.0f;
-        motion_y -= fabsf(sinf(progress * 3.14159265f)) * 3.0f;
+        pose.motion_y -= fabsf(sinf(progress * 3.14159265f)) * 3.0f;
     }
 
-    height_eye *= fmaxf(0.08f, height_multiplier);
-    float left_height = height_eye;
-    float right_height = height_eye;
+    pose.eye_height *= fmaxf(0.08f, height_multiplier);
+    pose.left_height = pose.eye_height;
+    pose.right_height = pose.eye_height;
     if (view->reacting && view->touch_reaction == DESK_TOUCH_WINK &&
         view->reaction_elapsed_ms < 900U) {
         const float progress = view->reaction_elapsed_ms / 900.0f;
@@ -460,24 +515,272 @@ void pip_face_port_render(uint8_t *framebuffer, int screen_width,
         } else {
             openness = smoothstep((progress - 0.55f) / 0.45f);
         }
-        left_height *= fmaxf(0.08f, openness);
+        pose.left_height *= fmaxf(0.08f, openness);
     }
-    const float left_x = 41.0f + gaze_x + motion_x;
-    const float right_x = 87.0f + gaze_x + motion_x;
-    const float center_y = 32.0f + gaze_y + motion_y;
-    draw_eye(&canvas, left_x, center_y, width_eye, left_height, false,
-             view->expression, eye_color, background);
-    draw_eye(&canvas, right_x, center_y, width_eye, right_height, true,
-             view->expression, eye_color, background);
+    return pose;
+}
 
-    if (view->expression == DESK_EXPRESSION_SLEEPY &&
+/* Layer 2: a behavior may replace only the mood/base geometry. */
+static void apply_behavior_mood_layer(
+    face_pose_t *pose, const copet_behavior_view_t *behavior)
+{
+    if (behavior == NULL) { return; }
+    pose->behavior_id = behavior->id;
+    const float elapsed_s = behavior->elapsed_ms / 1000.0f;
+    bool geometry_changed = true;
+    switch (behavior->id) {
+    case COPET_BEHAVIOR_ALERT:
+        pose->eye_width = 30.0f;
+        pose->eye_height = 44.0f;
+        pose->gaze_x = 0.0f;
+        pose->gaze_y = 0.0f;
+        break;
+    case COPET_BEHAVIOR_ATTENTIVE:
+        pose->eye_width = 38.0f;
+        pose->eye_height = 42.0f *
+            (1.0f + 0.04f * sinf(elapsed_s * 3.14159265f * 2.0f));
+        pose->gaze_x = 0.0f;
+        pose->gaze_y = 0.0f;
+        break;
+    case COPET_BEHAVIOR_FOCUSED:
+        pose->eye_width = 40.0f;
+        pose->eye_height = 24.0f;
+        pose->gaze_x = sinf(elapsed_s * 1.4f) * 0.7f;
+        pose->gaze_y = 3.0f;
+        break;
+    case COPET_BEHAVIOR_ANGRY:
+        pose->eye_width = 40.0f;
+        pose->eye_height = 28.0f;
+        pose->gaze_x = 0.0f;
+        pose->gaze_y = 0.0f;
+        break;
+    case COPET_BEHAVIOR_DISORIENTED: {
+        const float phase = behavior_progress(behavior) *
+                            3.14159265f * 2.0f;
+        pose->eye_width = 32.0f;
+        pose->eye_height = 36.0f;
+        pose->gaze_x = cosf(phase) * 6.0f;
+        pose->gaze_y = sinf(phase) * 6.0f;
+        pose->left_y_offset = -3.0f;
+        pose->right_y_offset = 3.0f;
+        break;
+    }
+    case COPET_BEHAVIOR_CONNECTING: {
+        const float phase = (behavior->elapsed_ms % 800U) / 800.0f;
+        pose->eye_width = 34.0f;
+        pose->eye_height = 34.0f;
+        pose->gaze_x = -9.0f + phase * 18.0f;
+        pose->gaze_y = 0.0f;
+        break;
+    }
+    case COPET_BEHAVIOR_ZEN:
+        pose->eye_width = 34.0f;
+        pose->eye_height = 5.0f;
+        pose->gaze_x = 0.0f;
+        pose->gaze_y = 0.0f;
+        pose->motion_y += sinf(elapsed_s * 3.14159265f * 2.0f / 2.4f) *
+                          2.0f;
+        break;
+    case COPET_BEHAVIOR_DICE_ROLL:
+        pose->eye_width = 30.0f;
+        pose->eye_height = 30.0f;
+        pose->gaze_x = 0.0f;
+        pose->gaze_y = 0.0f;
+        break;
+    case COPET_BEHAVIOR_LEGACY_SCARED:
+        pose->expression = DESK_EXPRESSION_SCARED;
+        pose->eye_width = 26.0f;
+        pose->eye_height = 32.0f;
+        break;
+    case COPET_BEHAVIOR_NEUTRAL:
+    case COPET_BEHAVIOR_DOUBLE_BLINK:
+    case COPET_BEHAVIOR_LOOK_LEFT:
+    case COPET_BEHAVIOR_LOOK_RIGHT:
+    case COPET_BEHAVIOR_ACKNOWLEDGE:
+    case COPET_BEHAVIOR_ID_COUNT:
+    default:
+        geometry_changed = false;
+        break;
+    }
+    if (geometry_changed) {
+        pose->left_height = pose->eye_height;
+        pose->right_height = pose->eye_height;
+    }
+}
+
+/* Layer 3: gestures modify openness/gaze without replacing the mood. */
+static void apply_behavior_gesture_layer(
+    face_pose_t *pose, const copet_behavior_view_t *behavior)
+{
+    if (behavior == NULL) { return; }
+    if (behavior->id == COPET_BEHAVIOR_DOUBLE_BLINK) {
+        const uint32_t phase = behavior->elapsed_ms;
+        float openness = 1.0f;
+        if (phase < 80U) {
+            openness = 1.0f - 0.92f * smoothstep(phase / 80.0f);
+        } else if (phase < 160U) {
+            openness = 0.08f + 0.92f *
+                smoothstep((phase - 80U) / 80.0f);
+        } else if (phase < 240U) {
+            openness = 1.0f;
+        } else if (phase < 320U) {
+            openness = 1.0f - 0.92f *
+                smoothstep((phase - 240U) / 80.0f);
+        } else {
+            openness = 0.08f + 0.92f *
+                smoothstep((phase - 320U) / 160.0f);
+        }
+        pose->left_height *= openness;
+        pose->right_height *= openness;
+    } else if (behavior->id == COPET_BEHAVIOR_LOOK_LEFT ||
+               behavior->id == COPET_BEHAVIOR_LOOK_RIGHT) {
+        const uint32_t elapsed = behavior->elapsed_ms;
+        float amount;
+        if (elapsed < 150U) {
+            amount = smoothstep(elapsed / 150.0f);
+        } else if (elapsed < 900U) {
+            amount = 1.0f;
+        } else {
+            amount = 1.0f - smoothstep((elapsed - 900U) / 300.0f);
+        }
+        pose->gaze_x = amount *
+            (behavior->id == COPET_BEHAVIOR_LOOK_LEFT ? -9.0f : 9.0f);
+    }
+}
+
+/* Layer 4: reactions move the complete eye group after shape selection. */
+static void apply_behavior_transform_layer(
+    face_pose_t *pose, const copet_behavior_view_t *behavior)
+{
+    if (behavior == NULL) { return; }
+    if (behavior->id == COPET_BEHAVIOR_ACKNOWLEDGE) {
+        const float progress = behavior_progress(behavior);
+        const float nod = sinf(progress * 3.14159265f);
+        pose->motion_y += nod * 4.0f;
+        const float openness = 1.0f - nod * 0.25f;
+        pose->left_height *= openness;
+        pose->right_height *= openness;
+    } else if (behavior->id == COPET_BEHAVIOR_ANGRY &&
+               behavior->elapsed_ms < 350U) {
+        const float envelope = 1.0f - behavior->elapsed_ms / 350.0f;
+        pose->motion_x += sinf(behavior->elapsed_ms * 0.11f) *
+                          3.0f * envelope;
+    }
+}
+
+static int dice_value(const copet_behavior_view_t *behavior, int offset)
+{
+    uint32_t elapsed = behavior->elapsed_ms;
+    if (behavior->duration_ms > 1200U &&
+        elapsed > behavior->duration_ms - 1200U) {
+        elapsed = behavior->duration_ms - 1200U;
+    }
+    const uint32_t step = elapsed / 120U;
+    return (int)((step * 5U + (uint32_t)offset * 2U) % 6U) + 1;
+}
+
+/* Layer 5: action overlays are drawn after the eyes, before screen HUD. */
+static void draw_behavior_overlay_layer(
+    face_canvas_t *canvas, const copet_behavior_view_t *behavior,
+    color_t eye_color)
+{
+    if (behavior == NULL) { return; }
+    if (behavior->id == COPET_BEHAVIOR_ALERT) {
+        const float x = behavior_progress(behavior) * 128.0f;
+        draw_line(canvas, x, 3.0f, x, 61.0f, 1, eye_color);
+    } else if (behavior->id == COPET_BEHAVIOR_CONNECTING) {
+        const float phase = (behavior->elapsed_ms % 800U) / 800.0f;
+        const float x = 12.0f + phase * 104.0f;
+        draw_line(canvas, x, 5.0f, x, 59.0f, 1, eye_color);
+    } else if (behavior->id == COPET_BEHAVIOR_ZEN) {
+        const int count = 1 + (int)((behavior->elapsed_ms / 400U) % 3U);
+        for (int index = 0; index < count; ++index) {
+            const float x = 58.0f + index * 6.0f;
+            fill_ellipse(canvas, x - 1.5f, 13.0f - 1.5f,
+                         x + 1.5f, 13.0f + 1.5f, eye_color);
+        }
+    }
+}
+
+static void render_face_layers(face_canvas_t *canvas,
+                               const desk_mode_view_t *desk,
+                               const copet_behavior_view_t *behavior)
+{
+    const color_t background = rgb332(0, 0, 0);
+    const color_t eye_color = rgb332(150, 255, 70);
+    const float now = desk != NULL
+        ? desk->animation_time_ms / 1000.0f
+        : behavior != NULL ? behavior->elapsed_ms / 1000.0f : 0.0f;
+    face_pose_t pose = build_base_pose(desk, now);
+    apply_behavior_mood_layer(&pose, behavior);
+    apply_behavior_gesture_layer(&pose, behavior);
+    apply_behavior_transform_layer(&pose, behavior);
+
+    const float left_x = 41.0f + pose.gaze_x + pose.motion_x;
+    const float right_x = 87.0f + pose.gaze_x + pose.motion_x;
+    const float center_y = 32.0f + pose.gaze_y + pose.motion_y;
+    if (behavior != NULL && behavior->id == COPET_BEHAVIOR_DICE_ROLL) {
+        draw_die(canvas, left_x, center_y + pose.left_y_offset,
+                 pose.eye_width, dice_value(behavior, 0),
+                 eye_color, background);
+        draw_die(canvas, right_x, center_y + pose.right_y_offset,
+                 pose.eye_width, dice_value(behavior, 1),
+                 eye_color, background);
+    } else {
+        draw_eye(canvas, left_x, center_y + pose.left_y_offset,
+                 pose.eye_width, pose.left_height, false,
+                 pose.expression, pose.behavior_id, eye_color, background);
+        draw_eye(canvas, right_x, center_y + pose.right_y_offset,
+                 pose.eye_width, pose.right_height, true,
+                 pose.expression, pose.behavior_id, eye_color, background);
+    }
+
+    draw_behavior_overlay_layer(canvas, behavior, eye_color);
+
+    const bool behavior_is_neutral = behavior == NULL ||
+        behavior->id == COPET_BEHAVIOR_NEUTRAL;
+    if (behavior_is_neutral && desk != NULL &&
+        desk->expression == DESK_EXPRESSION_SLEEPY &&
         fmodf(now, 8.55f) > 5.9f && fmodf(now, 8.55f) < 7.3f) {
-        draw_z(&canvas, 105.0f, 25.0f, 5.0f, eye_color);
-        draw_z(&canvas, 112.0f, 16.0f, 7.0f, eye_color);
+        draw_z(canvas, 105.0f, 25.0f, 5.0f, eye_color);
+        draw_z(canvas, 112.0f, 16.0f, 7.0f, eye_color);
     }
-    if (view->vibe == DESK_VIBE_SMOKING) {
-        draw_smoking(&canvas, now, eye_color, rgb332(65, 170, 60));
-    } else if (view->vibe == DESK_VIBE_OVERHEATED) {
-        draw_heat(&canvas, now, rgb332(210, 250, 65));
+    if (behavior_is_neutral && desk != NULL &&
+        desk->vibe == DESK_VIBE_SMOKING) {
+        draw_smoking(canvas, now, eye_color, rgb332(65, 170, 60));
+    } else if (behavior_is_neutral && desk != NULL &&
+               desk->vibe == DESK_VIBE_OVERHEATED) {
+        draw_heat(canvas, now, rgb332(210, 250, 65));
     }
+}
+
+void pip_face_port_render(uint8_t *framebuffer, int screen_width,
+                          int screen_height, int x, int y,
+                          int width, int height,
+                          const desk_mode_view_t *view,
+                          const copet_behavior_view_t *behavior)
+{
+    if (framebuffer == NULL || view == NULL || screen_width <= 0 ||
+        screen_height <= 0 || width <= 0 || height <= 0) {
+        return;
+    }
+    face_canvas_t canvas = {
+        framebuffer, screen_width, screen_height, x, y, width, height,
+    };
+    render_face_layers(&canvas, view, behavior);
+}
+
+void pip_face_port_render_compact(
+    uint8_t *framebuffer, int screen_width, int screen_height,
+    int x, int y, int width, int height,
+    const copet_behavior_view_t *behavior)
+{
+    if (framebuffer == NULL || behavior == NULL || screen_width <= 0 ||
+        screen_height <= 0 || width <= 0 || height <= 0) {
+        return;
+    }
+    face_canvas_t canvas = {
+        framebuffer, screen_width, screen_height, x, y, width, height,
+    };
+    render_face_layers(&canvas, NULL, behavior);
 }
