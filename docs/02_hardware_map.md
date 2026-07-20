@@ -9,7 +9,7 @@
 | capacitive touch button | quick action | GPIO/touch |
 | mouse wheel / encoder | menu navigation | GPIO |
 | SHT31 | temp/humidity | I2C |
-| MPU6050 | motion/tilt/wake-up | I2C |
+| MPU6500-compatible IMU (sold as MPU6050) | motion/tilt/wake-up | I2C |
 | GPS module + antenna | next-version Outdoor Mode | UART |
 | small speaker | sound | I2S via amp |
 | INMP441 microphone | short online voice request | I2S |
@@ -44,8 +44,9 @@ GPIO:
 
 - ESP32-WROOM-32 is the target board for the desktop product.
 - The active ESP32 DevKit prototype uses the display, SHT31, three-contact
-  encoder, and TTP223. The MPU6050 driver and reactions are ready; physical
-  verification is deferred until the module is soldered.
+  encoder, TTP223, and an IMU sold as MPU6050. Its chip reports
+  `WHO_AM_I=0x70`, identifying it as MPU6500-compatible; the driver accepts
+  both MPU6050 and MPU6500 identities.
 - Audio loopback is available through MAX98357A and INMP441 on shared I2S
   clocks. It is active only inside `AUDIO LOOPBACK`.
 - ST7789 is SPI, not I2C.

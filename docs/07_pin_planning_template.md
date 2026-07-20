@@ -19,8 +19,8 @@ This is the current and target ESP32-WROOM-32 DevKit prototype wiring.
 
 | Signal | ESP32 GPIO | Device |
 |---|---:|---|
-| SDA | GPIO21 | SHT31; MPU6050 auto-detected when soldered |
-| SCL | GPIO22 | SHT31; MPU6050 auto-detected when soldered |
+| SDA | GPIO21 | SHT31; MPU6050/MPU6500-compatible IMU |
+| SCL | GPIO22 | SHT31; MPU6050/MPU6500-compatible IMU |
 
 ## UART GPS
 

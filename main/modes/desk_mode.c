@@ -75,6 +75,18 @@ const char *desk_mode_vibe_label(desk_vibe_t vibe)
     }
 }
 
+const char *desk_mode_motion_label(desk_motion_event_t event)
+{
+    switch (event) {
+    case DESK_MOTION_MOVED: return "MOVED";
+    case DESK_MOTION_TILTED: return "TILTED";
+    case DESK_MOTION_SHAKEN: return "SHAKEN";
+    case DESK_MOTION_FALLING: return "FALLING";
+    case DESK_MOTION_NONE:
+    default: return "NONE";
+    }
+}
+
 const char *desk_mode_touch_reaction_label(desk_touch_reaction_t reaction)
 {
     switch (reaction) {

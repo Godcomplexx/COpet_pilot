@@ -105,6 +105,20 @@ MINI TV       later/feature-gated
 SETTINGS
 ```
 
+Current MVP visibility follows the same order but hides unfinished features:
+
+```text
+FOCUS
+SETTINGS
+```
+
+`ASSISTANT` is added after its idle/error screen and bounded text request are
+implemented. The existing `ANIMATION` gallery stays in the repository but is
+excluded from firmware until SD storage is ready. `MINI TV` remains hidden
+until SD hardware and playback are ready.
+BLE and audio loopback remain developer diagnostics and are not product-menu
+items.
+
 - encoder changes highlight;
 - short touch opens the highlighted item;
 - long touch returns to Desk Mode;
@@ -130,6 +144,10 @@ Screen priority:
 
 Short touch starts/pauses. Long touch returns Home without deleting the timer
 state. Reopening Focus shows the same remaining time.
+
+The current MVP pauses a running interval when Home is requested, preserves the
+remaining time and restores it on the next Focus entry. The footer command is
+state-dependent: `TOUCH START`, `TOUCH PAUSE` or `TOUCH RESUME`.
 
 ## UC-05 — Ask the Online Assistant
 

@@ -2,6 +2,10 @@
 
 Date: 2026-07-16
 
+Current status: the verified gallery implementation and all source assets stay
+in the repository, but the mode and its 100,800-byte asset are excluded from
+the product firmware until the SD-card media stage.
+
 ## What we are trying to prove
 
 Display a seven-frame Aseprite animation on the ST7789 without exhausting the
@@ -24,6 +28,10 @@ The two intermediate levels are rendered with a blue-gray palette so the
 liquid remains visible without making the black outline lighter.
 
 ## Verification
+
+The steps below describe the original standalone hardware verification. To run
+them again, the gallery sources and embedded asset must first be re-enabled in
+`main/CMakeLists.txt` and the product menu.
 
 1. Run `tools/convert_animation.ps1` after changing the PNG frames.
 2. Build and flash the firmware.

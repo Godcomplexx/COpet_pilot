@@ -85,3 +85,6 @@ _usb_asr.txt
 *.bak
 *.swp
 *~
+
+# Host unit test build artifacts
+test/host/build/
