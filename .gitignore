@@ -88,3 +88,10 @@ _usb_asr.txt
 
 # Host unit test build artifacts
 test/host/build/
+test/build-check/
+build-*/
+
+# Native build artifacts
+*.exe
+*.obj
+test/*.zip
