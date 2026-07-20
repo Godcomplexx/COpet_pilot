@@ -125,24 +125,28 @@ static void test_focus_source(void)
     CHECK(update_at(&engine, false, 600) == COPET_BEHAVIOR_NEUTRAL);
 }
 
-static void test_shake_escalation(void)
+static void test_hit_is_angry(void)
 {
     copet_behavior_t engine;
     copet_behavior_init(&engine, 0, 6);
     update_at(&engine, true, 0);
+
+    /* A hit/knock goes straight to angry (P1), no scared-first flip-flop. */
     const copet_behavior_event_t shake = event(
         COPET_BEHAVIOR_EVENT_MOTION_SHAKEN_STRONG, 0);
     copet_behavior_post(&engine, &shake, 100);
-    CHECK(update_at(&engine, true, 100) == COPET_BEHAVIOR_LEGACY_SCARED);
+    CHECK(update_at(&engine, true, 100) == COPET_BEHAVIOR_ANGRY);
     CHECK(copet_behavior_get_view(&engine)->priority ==
           COPET_BEHAVIOR_PRIORITY_P1);
+    CHECK(update_at(&engine, true, 1900) == COPET_BEHAVIOR_NEUTRAL);
 
-    copet_behavior_post(&engine, &shake, 5000);
-    CHECK(update_at(&engine, true, 5000) == COPET_BEHAVIOR_ANGRY);
-    CHECK(update_at(&engine, true, 6800) == COPET_BEHAVIOR_NEUTRAL);
-
-    copet_behavior_post(&engine, &shake, 11000);
-    CHECK(update_at(&engine, true, 11000) == COPET_BEHAVIOR_LEGACY_SCARED);
+    /* Falling still wins as scared P0 over a hit. */
+    const copet_behavior_event_t fall = event(
+        COPET_BEHAVIOR_EVENT_MOTION_FALLING, 0);
+    copet_behavior_post(&engine, &fall, 2000);
+    CHECK(update_at(&engine, true, 2000) == COPET_BEHAVIOR_LEGACY_SCARED);
+    copet_behavior_post(&engine, &shake, 2100);
+    CHECK(update_at(&engine, true, 2100) == COPET_BEHAVIOR_LEGACY_SCARED);
 }
 
 static void test_p3_cooldown_history_and_cancel(void)
@@ -185,29 +189,91 @@ static void test_p3_cooldown_history_and_cancel(void)
           COPET_BEHAVIOR_NEUTRAL);
 }
 
-static void test_touch_streak_happy_kawaii(void)
+static copet_behavior_id_t update_pet(copet_behavior_t *engine,
+                                     uint32_t hold_ms, uint32_t now_ms)
+{
+    const copet_behavior_context_t context = {
+        .desk_active = true,
+        .touch_hold_ms = hold_ms,
+    };
+    copet_behavior_update(engine, &context, now_ms);
+    return copet_behavior_get_view(engine)->id;
+}
+
+static void test_tap_is_attentive(void)
 {
     copet_behavior_t engine;
     copet_behavior_init(&engine, 0, 9);
     update_at(&engine, true, 0);
+
+    /* A quick tap (not long-idle) is a plain attentive; no tap-streak. */
     const copet_behavior_event_t touch = event(
         COPET_BEHAVIOR_EVENT_TOUCH_SHORT, 0);
-
-    /* First tap (not long-idle, no prior tap) is a plain attentive. */
     copet_behavior_post(&engine, &touch, 2000);
     CHECK(update_at(&engine, true, 2000) == COPET_BEHAVIOR_ATTENTIVE);
-
-    /* Second tap within the streak window escalates to happy. */
     copet_behavior_post(&engine, &touch, 2500);
-    CHECK(update_at(&engine, true, 2500) == COPET_BEHAVIOR_HAPPY);
+    CHECK(update_at(&engine, true, 2500) == COPET_BEHAVIOR_ATTENTIVE);
+}
 
-    /* Third quick tap becomes kawaii. */
-    copet_behavior_post(&engine, &touch, 3000);
-    CHECK(update_at(&engine, true, 3000) == COPET_BEHAVIOR_KAWAII);
+static bool is_gentle_pet(copet_behavior_id_t id)
+{
+    return id == COPET_BEHAVIOR_HAPPY || id == COPET_BEHAVIOR_CAT;
+}
 
-    /* A tap after the window resets the streak back to attentive. */
-    copet_behavior_post(&engine, &touch, 6000);
-    CHECK(update_at(&engine, true, 6000) == COPET_BEHAVIOR_ATTENTIVE);
+static bool is_loving_pet(copet_behavior_id_t id)
+{
+    return id == COPET_BEHAVIOR_KAWAII || id == COPET_BEHAVIOR_LOVELY;
+}
+
+static void test_petting_hold(void)
+{
+    copet_behavior_t engine;
+    copet_behavior_init(&engine, 0, 12);
+    update_at(&engine, true, 0);
+
+    /* Released -> neutral. The longer it is held, the happier the tier. */
+    CHECK(update_pet(&engine, 0, 100) == COPET_BEHAVIOR_NEUTRAL);
+    CHECK(update_pet(&engine, 100, 1100) == COPET_BEHAVIOR_ATTENTIVE);
+    CHECK(is_gentle_pet(update_pet(&engine, 600, 1600)));
+    CHECK(is_loving_pet(update_pet(&engine, 2000, 3000)));
+    CHECK(copet_behavior_get_view(&engine)->source ==
+          COPET_BEHAVIOR_SOURCE_INPUT);
+
+    /* Letting go settles back to neutral. */
+    CHECK(update_pet(&engine, 0, 3100) == COPET_BEHAVIOR_NEUTRAL);
+}
+
+static void test_petting_variety(void)
+{
+    /* Repeated pets into the same tier must not show the same emotion twice
+     * in a row, and must stay within the positive pool. */
+    copet_behavior_t engine;
+    copet_behavior_init(&engine, 0, 7);
+    update_at(&engine, true, 0);
+
+    copet_behavior_id_t previous = COPET_BEHAVIOR_NEUTRAL;
+    uint32_t now = 100;
+    for (int session = 0; session < 6; ++session) {
+        const copet_behavior_id_t id = update_pet(&engine, 700, now);
+        CHECK(is_gentle_pet(id));
+        CHECK(id != previous);
+        previous = id;
+        update_pet(&engine, 0, now + 50); /* release */
+        now += 300;
+    }
+}
+
+static void test_petting_cancels_p3(void)
+{
+    copet_behavior_t engine;
+    copet_behavior_init(&engine, 0, 13);
+    update_at(&engine, true, 0);
+    engine.next_p3_ms = 1;
+    const copet_behavior_id_t p3 = update_at(&engine, true, 1);
+    CHECK(p3 == COPET_BEHAVIOR_ZEN || p3 == COPET_BEHAVIOR_DICE_ROLL);
+
+    /* Petting interrupts an idle P3 activity in the same update. */
+    CHECK(is_gentle_pet(update_pet(&engine, 700, 2000)));
 }
 
 static void test_chill_on_break(void)
@@ -289,9 +355,12 @@ int main(void)
     test_equal_priority_and_wifi_deadline();
     test_touch_followup();
     test_focus_source();
-    test_shake_escalation();
+    test_hit_is_angry();
     test_p3_cooldown_history_and_cancel();
-    test_touch_streak_happy_kawaii();
+    test_tap_is_attentive();
+    test_petting_hold();
+    test_petting_variety();
+    test_petting_cancels_p3();
     test_chill_on_break();
     test_nervous_wifi_escalation();
     test_wraparound();

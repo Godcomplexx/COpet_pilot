@@ -16,9 +16,10 @@ enum {
     LEGACY_SCARED_MS = 1600,
     WIFI_CONNECTING_MAX_MS = 10000,
     WIFI_NERVOUS_MS = 6000,
-    TOUCH_STREAK_MS = 1500,
+    /* Petting: the longer the pad is held, the happier CoPet gets. */
+    PET_HAPPY_MS = 500,
+    PET_KAWAII_MS = 1800,
     LONG_IDLE_TOUCH_MS = 30000,
-    SHAKE_WINDOW_MS = 5000,
     P3_IDLE_MS = 90000,
     P3_RETRY_MIN_MS = 60000,
     P3_RETRY_SPAN_MS = 120000,
@@ -72,6 +73,9 @@ static uint32_t duration_for(copet_behavior_id_t id)
     case COPET_BEHAVIOR_NEUTRAL:
     case COPET_BEHAVIOR_FOCUSED:
     case COPET_BEHAVIOR_CHILL:
+    case COPET_BEHAVIOR_CAT:
+    case COPET_BEHAVIOR_LOVELY:
+    case COPET_BEHAVIOR_LISTENING:
     case COPET_BEHAVIOR_CONNECTING:
     case COPET_BEHAVIOR_ID_COUNT:
     default: return 0;
@@ -238,6 +242,39 @@ static copet_behavior_id_t choose_p3(copet_behavior_t *engine,
     return first_age >= second_age ? cooled[0] : cooled[1];
 }
 
+/* Longer hold -> higher happiness tier. */
+static uint8_t pet_tier_for(uint32_t hold_ms)
+{
+    if (hold_ms >= PET_KAWAII_MS) { return 2U; }
+    if (hold_ms >= PET_HAPPY_MS) { return 1U; }
+    return 0U;
+}
+
+/*
+ * Pick a positive emotion for the given petting tier, varied so repeated pets
+ * do not always show the same face. Tier 0 always "notices" with attentive;
+ * higher tiers draw a random emotion from a pool, avoiding the previous one.
+ */
+static copet_behavior_id_t choose_pet(copet_behavior_t *engine, uint8_t tier)
+{
+    static const copet_behavior_id_t gentle[] = {
+        COPET_BEHAVIOR_HAPPY, COPET_BEHAVIOR_CAT,
+    };
+    static const copet_behavior_id_t loving[] = {
+        COPET_BEHAVIOR_KAWAII, COPET_BEHAVIOR_LOVELY,
+    };
+    if (tier == 0U) {
+        return COPET_BEHAVIOR_ATTENTIVE;
+    }
+    const copet_behavior_id_t *pool = tier >= 2U ? loving : gentle;
+    uint8_t index = (uint8_t)(random_next(engine) % 2U);
+    if (pool[index] == engine->pet_recent) {
+        index ^= 1U; /* do not repeat the previous emotion */
+    }
+    engine->pet_recent = pool[index];
+    return pool[index];
+}
+
 static void update_view(copet_behavior_t *engine, uint32_t now_ms)
 {
     copet_behavior_id_t id = COPET_BEHAVIOR_NEUTRAL;
@@ -250,6 +287,14 @@ static void update_view(copet_behavior_t *engine, uint32_t now_ms)
         source = engine->transient_source;
         started_ms = engine->transient_started_ms;
         duration_ms = duration_for(id);
+    } else if (engine->petting_hold_ms > 0U) {
+        id = engine->pet_current != COPET_BEHAVIOR_NEUTRAL
+            ? engine->pet_current
+            : COPET_BEHAVIOR_ATTENTIVE;
+        source = COPET_BEHAVIOR_SOURCE_INPUT;
+        /* Anchor elapsed to the hold time so the face animates as it is held. */
+        started_ms = now_ms - engine->petting_hold_ms;
+        duration_ms = 0;
     } else if (engine->wifi_connecting &&
                !time_reached(now_ms,
                              engine->wifi_started_ms +
@@ -266,6 +311,9 @@ static void update_view(copet_behavior_t *engine, uint32_t now_ms)
         id = COPET_BEHAVIOR_CHILL;
         source = COPET_BEHAVIOR_SOURCE_FOCUS;
         started_ms = engine->focus_started_ms;
+    } else if (engine->music_present) {
+        id = COPET_BEHAVIOR_LISTENING;
+        source = COPET_BEHAVIOR_SOURCE_SCHEDULER;
     }
 
     engine->view.id = id;
@@ -309,24 +357,13 @@ void copet_behavior_post(copet_behavior_t *engine,
     case COPET_BEHAVIOR_EVENT_TOUCH_SHORT: {
         const bool long_idle = now_ms - engine->last_activity_ms >=
                                LONG_IDLE_TOUCH_MS;
-        /* A quick sequence of taps escalates attentive -> happy -> kawaii. */
-        const bool in_streak = !long_idle &&
-            (now_ms - engine->last_touch_ms) <= TOUCH_STREAK_MS;
-        engine->touch_streak = in_streak
-            ? (uint8_t)(engine->touch_streak + 1U) : 1U;
-        engine->last_touch_ms = now_ms;
         register_activity(engine, now_ms);
+        /* A quick tap acknowledges; happy/kawaii come from holding (petting). */
         if (long_idle && start_transient(
                 engine, COPET_BEHAVIOR_DOUBLE_BLINK,
                 COPET_BEHAVIOR_SOURCE_INPUT, now_ms)) {
             engine->followup_id = COPET_BEHAVIOR_ATTENTIVE;
             engine->followup_duration_ms = ATTENTIVE_MS;
-        } else if (engine->touch_streak >= 3U) {
-            start_transient(engine, COPET_BEHAVIOR_KAWAII,
-                            COPET_BEHAVIOR_SOURCE_INPUT, now_ms);
-        } else if (engine->touch_streak == 2U) {
-            start_transient(engine, COPET_BEHAVIOR_HAPPY,
-                            COPET_BEHAVIOR_SOURCE_INPUT, now_ms);
         } else {
             start_transient(engine, COPET_BEHAVIOR_ATTENTIVE,
                             COPET_BEHAVIOR_SOURCE_INPUT, now_ms);
@@ -355,27 +392,13 @@ void copet_behavior_post(copet_behavior_t *engine,
                         COPET_BEHAVIOR_SOURCE_MOTION, now_ms);
         break;
     case COPET_BEHAVIOR_EVENT_MOTION_SHAKEN_STRONG:
+        /* A hit/knock -> angry directly (falling still wins as scared P0). */
         register_activity(engine, now_ms);
-        if (engine->transient_id != COPET_BEHAVIOR_NEUTRAL &&
-            engine->transient_priority == COPET_BEHAVIOR_PRIORITY_P0) {
-            break;
-        }
-        if (engine->shake_pending &&
-            !time_reached(now_ms, engine->last_shake_ms + SHAKE_WINDOW_MS)) {
-            engine->shake_pending = false;
-            start_transient(engine, COPET_BEHAVIOR_ANGRY,
-                            COPET_BEHAVIOR_SOURCE_MOTION, now_ms);
-        } else {
-            engine->shake_pending = true;
-            engine->last_shake_ms = now_ms;
-            start_transient(engine, COPET_BEHAVIOR_LEGACY_SCARED,
-                            COPET_BEHAVIOR_SOURCE_MOTION, now_ms);
-            engine->transient_priority = COPET_BEHAVIOR_PRIORITY_P1;
-        }
+        start_transient(engine, COPET_BEHAVIOR_ANGRY,
+                        COPET_BEHAVIOR_SOURCE_MOTION, now_ms);
         break;
     case COPET_BEHAVIOR_EVENT_MOTION_FALLING:
         register_activity(engine, now_ms);
-        engine->shake_pending = false;
         start_transient(engine, COPET_BEHAVIOR_LEGACY_SCARED,
                         COPET_BEHAVIOR_SOURCE_MOTION, now_ms);
         break;
@@ -417,10 +440,22 @@ void copet_behavior_update(copet_behavior_t *engine,
         engine->desk_active = context->desk_active;
         register_activity(engine, now_ms);
     }
-    if (engine->shake_pending &&
-        time_reached(now_ms, engine->last_shake_ms + SHAKE_WINDOW_MS)) {
-        engine->shake_pending = false;
+    /* Holding the pad is active interaction: it cancels idle P3 activities and
+     * keeps the inactivity timer from advancing while CoPet is being petted.
+     * A fresh hold, or crossing into a higher tier, picks a varied emotion. */
+    if (context->touch_hold_ms > 0U) {
+        register_activity(engine, now_ms);
+        const uint8_t tier = pet_tier_for(context->touch_hold_ms);
+        if (engine->petting_hold_ms == 0U || tier != engine->pet_tier) {
+            engine->pet_current = choose_pet(engine, tier);
+            engine->pet_tier = tier;
+        }
+    } else {
+        engine->pet_tier = 0U;
+        engine->pet_current = COPET_BEHAVIOR_NEUTRAL;
     }
+    engine->petting_hold_ms = context->touch_hold_ms;
+    engine->music_present = context->music_present;
     if (engine->transient_id != COPET_BEHAVIOR_NEUTRAL &&
         time_reached(now_ms, engine->transient_deadline_ms)) {
         finish_transient(engine, now_ms, true);
@@ -430,6 +465,7 @@ void copet_behavior_update(copet_behavior_t *engine,
      * once per connecting episode, only while nothing else is transient. */
     if (engine->wifi_connecting && !engine->nervous_shown &&
         engine->transient_id == COPET_BEHAVIOR_NEUTRAL &&
+        engine->petting_hold_ms == 0U &&
         time_reached(now_ms, engine->wifi_started_ms + WIFI_NERVOUS_MS) &&
         !time_reached(now_ms,
                       engine->wifi_started_ms + WIFI_CONNECTING_MAX_MS)) {
@@ -441,6 +477,8 @@ void copet_behavior_update(copet_behavior_t *engine,
 
     const bool higher_active =
         engine->transient_id != COPET_BEHAVIOR_NEUTRAL ||
+        engine->petting_hold_ms > 0U ||
+        engine->music_present ||
         (engine->wifi_connecting &&
          !time_reached(now_ms,
                        engine->wifi_started_ms + WIFI_CONNECTING_MAX_MS)) ||
@@ -483,8 +521,11 @@ const char *copet_behavior_label(copet_behavior_id_t id)
     case COPET_BEHAVIOR_DICE_ROLL: return "DICE";
     case COPET_BEHAVIOR_HAPPY: return "HAPPY";
     case COPET_BEHAVIOR_KAWAII: return "KAWAII";
+    case COPET_BEHAVIOR_CAT: return "CAT";
+    case COPET_BEHAVIOR_LOVELY: return "LOVELY";
     case COPET_BEHAVIOR_CHILL: return "CHILL";
     case COPET_BEHAVIOR_NERVOUS: return "NERVOUS";
+    case COPET_BEHAVIOR_LISTENING: return "LISTENING";
     case COPET_BEHAVIOR_LEGACY_SCARED: return "SCARED";
     case COPET_BEHAVIOR_NEUTRAL:
     case COPET_BEHAVIOR_ID_COUNT:

@@ -28,8 +28,11 @@ typedef enum {
     /* v2 group: richer touch affection, calm break, connection anxiety. */
     COPET_BEHAVIOR_HAPPY,
     COPET_BEHAVIOR_KAWAII,
+    COPET_BEHAVIOR_CAT,
+    COPET_BEHAVIOR_LOVELY,
     COPET_BEHAVIOR_CHILL,
     COPET_BEHAVIOR_NERVOUS,
+    COPET_BEHAVIOR_LISTENING,
     COPET_BEHAVIOR_LEGACY_SCARED,
     COPET_BEHAVIOR_ID_COUNT,
 } copet_behavior_id_t;
@@ -76,6 +79,11 @@ typedef struct {
 
 typedef struct {
     bool desk_active;
+    /* How long the touch pad has been held right now, in ms (0 = released).
+     * Drives the "petting" escalation: the longer it is held, the happier. */
+    uint32_t touch_hold_ms;
+    /* Sustained ambient sound (music) is detected -> show the listening face. */
+    bool music_present;
 } copet_behavior_context_t;
 
 typedef struct {
@@ -100,22 +108,23 @@ typedef struct {
     uint32_t transient_deadline_ms;
     uint32_t followup_duration_ms;
     uint32_t last_activity_ms;
-    uint32_t last_touch_ms;
+    uint32_t petting_hold_ms;
+    copet_behavior_id_t pet_current;
+    copet_behavior_id_t pet_recent;
+    uint8_t pet_tier;
     uint32_t next_p3_ms;
     uint32_t wifi_started_ms;
     uint32_t focus_started_ms;
-    uint32_t last_shake_ms;
     uint32_t random_state;
     uint32_t p3_last_completed_ms[2];
     copet_behavior_id_t p3_history[4];
     copet_behavior_focus_state_t focus_state;
     uint8_t p3_history_count;
-    uint8_t touch_streak;
     bool p3_seen[2];
     bool wifi_connecting;
     bool nervous_shown;
-    bool shake_pending;
     bool desk_active;
+    bool music_present;
     bool initialized;
 } copet_behavior_t;
 

@@ -26,6 +26,7 @@ $suites = @{
     "test_desk_mode"      = @("modes\desk_mode.c")
     "test_settings_mode"  = @("modes\settings_mode.c")
     "test_wifi_credentials" = @("services\wifi_credentials.c")
+    "test_music_detector" = @("core\music_detector.c")
 }
 
 function Resolve-Cl {

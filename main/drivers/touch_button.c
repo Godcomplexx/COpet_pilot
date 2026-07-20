@@ -72,3 +72,8 @@ touch_button_event_t touch_button_poll(int64_t now_ms)
 
     return TOUCH_BUTTON_EVENT_NONE;
 }
+
+bool touch_button_is_pressed(void)
+{
+    return s_stable_pressed;
+}

@@ -51,6 +51,15 @@ menu "CoPet Pilot"
         help
             Password for the 3rd network. Local sdkconfig only; never logged.
 
+    config COPET_MIC_ENABLED
+        bool "Enable microphone listening reaction"
+        default y
+        help
+            Capture ambient loudness from the INMP441 on the shared I2S bus and
+            show the "listening" emotion when there is sustained sound (music)
+            around. Best-effort: if the mic fails to start, event sounds still
+            work. Turn off to run the speaker only.
+
     config COPET_DIAGNOSTIC_BLE_ENABLED
         bool "Enable optional diagnostic BLE at boot"
         default n

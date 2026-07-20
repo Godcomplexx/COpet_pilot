@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.c"
         "core/copet_behavior.c"
+        "core/music_detector.c"
         "drivers/copet_audio.c"
         "drivers/copet_ble.c"
         "drivers/mpu6050.c"
