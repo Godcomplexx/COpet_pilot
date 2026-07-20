@@ -111,9 +111,51 @@ static void test_home_pause_only_affects_running(void)
     CHECK(focus.remaining_seconds == remaining);
 }
 
+static void test_presets(void)
+{
+    focus_mode_t focus;
+    focus_mode_init(&focus);
+    CHECK(focus.preset == 0);
+    CHECK(focus_mode_work_seconds(&focus) == FOCUS_WORK_SECONDS);
+    CHECK(focus_mode_break_seconds(&focus) == FOCUS_BREAK_SECONDS);
+    CHECK_STR(focus_mode_preset_label(&focus), "25/5");
+    CHECK(focus_mode_preset_count() >= 2);
+
+    /* Turning while READY cycles the preset and resets the remaining time. */
+    focus_mode_select_preset(&focus, 1);
+    CHECK(focus.preset == 1);
+    CHECK_STR(focus_mode_preset_label(&focus), "50/10");
+    CHECK(focus.remaining_seconds == focus_mode_work_seconds(&focus));
+    CHECK(focus.remaining_seconds == 50U * 60U);
+
+    /* Turning backward from the first preset wraps to the last. */
+    focus_mode_init(&focus);
+    focus_mode_select_preset(&focus, -1);
+    CHECK(focus.preset == (uint8_t)(focus_mode_preset_count() - 1U));
+
+    /* The selected preset drives the break length after a completed work run. */
+    focus_mode_init(&focus);
+    focus_mode_select_preset(&focus, 2); /* 60/20 */
+    CHECK_STR(focus_mode_preset_label(&focus), "60/20");
+    focus_mode_toggle(&focus, us(0));
+    CHECK(focus_mode_tick(&focus, us(60 * 60 + 5)) == true);
+    CHECK(focus.break_phase == true);
+    CHECK(focus.remaining_seconds == 20U * 60U);
+
+    /* The preset is locked once the timer is running or paused. */
+    focus_mode_init(&focus);
+    focus_mode_toggle(&focus, us(0));
+    focus_mode_select_preset(&focus, 1);
+    CHECK(focus.preset == 0);
+    focus_mode_pause(&focus);
+    focus_mode_select_preset(&focus, 1);
+    CHECK(focus.preset == 0);
+}
+
 int main(void)
 {
     test_initial_state();
+    test_presets();
     test_start_and_tick();
     test_work_completes_into_break();
     test_pause_preserves_and_resumes_cleanly();

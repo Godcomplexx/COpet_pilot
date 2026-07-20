@@ -587,6 +587,36 @@ static void apply_behavior_mood_layer(
         pose->gaze_x = 0.0f;
         pose->gaze_y = 0.0f;
         break;
+    case COPET_BEHAVIOR_HAPPY:
+        pose->expression = DESK_EXPRESSION_HAPPY;
+        pose->eye_width = 40.0f;
+        pose->eye_height = 34.0f;
+        pose->gaze_x = 0.0f;
+        pose->gaze_y = 0.0f;
+        pose->motion_y -= fabsf(sinf(behavior_progress(behavior) *
+                                     3.14159265f)) * 3.0f;
+        break;
+    case COPET_BEHAVIOR_KAWAII:
+        pose->eye_width = 42.0f;
+        pose->eye_height = 42.0f;
+        pose->gaze_x = 0.0f;
+        pose->gaze_y = 0.0f;
+        pose->motion_y += sinf(elapsed_s * 3.14159265f * 2.0f / 2.2f) * 2.0f;
+        break;
+    case COPET_BEHAVIOR_CHILL:
+        pose->expression = DESK_EXPRESSION_CHILL;
+        pose->eye_width = 40.0f;
+        pose->eye_height = 22.0f;
+        pose->gaze_x = sinf(elapsed_s * 0.8f) * 1.0f;
+        pose->gaze_y = 2.0f;
+        break;
+    case COPET_BEHAVIOR_NERVOUS:
+        pose->eye_width = 30.0f;
+        pose->eye_height = 34.0f;
+        pose->gaze_x = sinf(elapsed_s * 12.0f) * 3.0f;
+        pose->gaze_y = 0.0f;
+        pose->motion_x += sinf(elapsed_s * 30.0f) * 1.2f;
+        break;
     case COPET_BEHAVIOR_LEGACY_SCARED:
         pose->expression = DESK_EXPRESSION_SCARED;
         pose->eye_width = 26.0f;
@@ -699,6 +729,14 @@ static void draw_behavior_overlay_layer(
             fill_ellipse(canvas, x - 1.5f, 13.0f - 1.5f,
                          x + 1.5f, 13.0f + 1.5f, eye_color);
         }
+    } else if (behavior->id == COPET_BEHAVIOR_KAWAII) {
+        /* Two twinkling sparkles above the outer corners of the eyes. */
+        const float twinkle = 1.4f + 0.6f *
+            sinf(behavior->elapsed_ms / 120.0f);
+        fill_ellipse(canvas, 27.0f - twinkle, 13.0f - twinkle,
+                     27.0f + twinkle, 13.0f + twinkle, eye_color);
+        fill_ellipse(canvas, 101.0f - twinkle, 13.0f - twinkle,
+                     101.0f + twinkle, 13.0f + twinkle, eye_color);
     }
 }
 
@@ -768,19 +806,4 @@ void pip_face_port_render(uint8_t *framebuffer, int screen_width,
         framebuffer, screen_width, screen_height, x, y, width, height,
     };
     render_face_layers(&canvas, view, behavior);
-}
-
-void pip_face_port_render_compact(
-    uint8_t *framebuffer, int screen_width, int screen_height,
-    int x, int y, int width, int height,
-    const copet_behavior_view_t *behavior)
-{
-    if (framebuffer == NULL || behavior == NULL || screen_width <= 0 ||
-        screen_height <= 0 || width <= 0 || height <= 0) {
-        return;
-    }
-    face_canvas_t canvas = {
-        framebuffer, screen_width, screen_height, x, y, width, height,
-    };
-    render_face_layers(&canvas, NULL, behavior);
 }

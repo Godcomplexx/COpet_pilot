@@ -1,5 +1,4 @@
 #include "ui/settings_ui.h"
-#include "ui/pip_face_port.h"
 #include "ui/ui_canvas.h"
 
 #include <stddef.h>
@@ -7,7 +6,6 @@
 void settings_ui_render(uint8_t *framebuffer, int width, int height,
                         const desk_mode_view_t *view,
                         const settings_mode_t *settings,
-                        const copet_behavior_view_t *behavior,
                         const char *network_status,
                         const weather_service_snapshot_t *weather)
 {
@@ -26,8 +24,6 @@ void settings_ui_render(uint8_t *framebuffer, int width, int height,
     ui_fill_rect(&canvas, 0, 0, width, height, background);
     ui_draw_scanlines(&canvas, scanline);
     ui_draw_text(&canvas, 8, 6, "SETTINGS", 3, phosphor);
-    pip_face_port_render_compact(framebuffer, width, height,
-                                 174, 3, 56, 25, behavior);
     ui_draw_dashed_horizontal(&canvas, 6, 30, 228, grid);
 
     const char *weather_status = weather == NULL

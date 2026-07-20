@@ -12,9 +12,4 @@ void pip_face_port_render(uint8_t *framebuffer, int screen_width,
                           const desk_mode_view_t *view,
                           const copet_behavior_view_t *behavior);
 
-void pip_face_port_render_compact(
-    uint8_t *framebuffer, int screen_width, int screen_height,
-    int x, int y, int width, int height,
-    const copet_behavior_view_t *behavior);
-
 #endif
