@@ -30,7 +30,7 @@ desk_comfort_t desk_mode_classify_comfort(bool sensor_ok,
 {
     if (!sensor_ok) { return DESK_COMFORT_SENSOR_ERROR; }
     if (temperature_c < 18.0f) { return DESK_COMFORT_COLD; }
-    if (temperature_c > 28.0f) { return DESK_COMFORT_HOT; }
+    if (temperature_c > 32.0f) { return DESK_COMFORT_HOT; }
     if (humidity_percent < 30.0f) { return DESK_COMFORT_DRY; }
     if (humidity_percent > 70.0f) { return DESK_COMFORT_HUMID; }
     return DESK_COMFORT_COMFY;
