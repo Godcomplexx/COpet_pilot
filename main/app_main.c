@@ -824,6 +824,7 @@ void app_main(void)
                             &behavior,
                             COPET_BEHAVIOR_EVENT_MOTION_SHAKEN_STRONG,
                             0, (uint32_t)now_ms);
+                        play_audio_event(audio_available, COPET_AUDIO_ANGRY);
                         motion_impact_until_ms =
                             (uint32_t)now_ms + MOTION_IMPACT_LOCK_MS;
                     } else if ((motion_event == DESK_MOTION_TILTED ||

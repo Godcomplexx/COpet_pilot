@@ -12,6 +12,7 @@ typedef enum {
     COPET_AUDIO_FOCUS_START,
     COPET_AUDIO_FOCUS_PAUSE,
     COPET_AUDIO_FOCUS_COMPLETE,
+    COPET_AUDIO_ANGRY,
 } copet_audio_event_t;
 
 esp_err_t copet_audio_init(void);

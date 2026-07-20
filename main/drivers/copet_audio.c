@@ -45,6 +45,10 @@ extern const uint8_t focus_complete_start[]
     asm("_binary_focus_complete_pcm_start");
 extern const uint8_t focus_complete_end[]
     asm("_binary_focus_complete_pcm_end");
+extern const uint8_t angry_grunt_start[]
+    asm("_binary_angry_grunt_pcm_start");
+extern const uint8_t angry_grunt_end[]
+    asm("_binary_angry_grunt_pcm_end");
 
 static const char *TAG = "copet_audio";
 static i2s_chan_handle_t s_tx_channel;
@@ -82,6 +86,10 @@ static bool get_clip(copet_audio_event_t event, audio_clip_t *clip)
     case COPET_AUDIO_FOCUS_COMPLETE:
         *clip = (audio_clip_t){focus_complete_start, focus_complete_end,
                                "FOCUS COMPLETE"};
+        return true;
+    case COPET_AUDIO_ANGRY:
+        *clip = (audio_clip_t){angry_grunt_start, angry_grunt_end,
+                               "ANGRY GRUNT"};
         return true;
     default:
         return false;

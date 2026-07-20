@@ -28,6 +28,7 @@ idf_component_register(
         "assets/sounds/menu_move.pcm"
         "assets/sounds/focus_start.pcm"
         "assets/sounds/focus_complete.pcm"
+        "assets/sounds/angry_grunt.pcm"
     REQUIRES
         bt
         esp_driver_gpio

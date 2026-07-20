@@ -216,20 +216,6 @@ static void apply_smoking_pose(float now, float *gaze_x, float *gaze_y,
 static void fill_polygon(face_canvas_t *canvas, const float pts[][2],
                          int count, color_t color);
 
-static void cover_lid(face_canvas_t *canvas, float x, float y,
-                      float width, float height, bool is_right,
-                      float inner, float outer, color_t background)
-{
-    for (int column = 0; column <= (int)width; ++column) {
-        const float t = width > 0.0f ? column / width : 0.0f;
-        const float left_depth = is_right ? inner : outer;
-        const float right_depth = is_right ? outer : inner;
-        const float depth = left_depth + (right_depth - left_depth) * t;
-        fill_rect(canvas, x + column, y - 1.0f, 1.2f,
-                  height * depth + 1.0f, background);
-    }
-}
-
 /* Upstream painters.lids: flat top/bottom lids carved out of the eye. */
 static void paint_lids(face_canvas_t *canvas, float x, float y,
                        float w, float h, float top, float bottom,
@@ -293,8 +279,9 @@ static void draw_eye(face_canvas_t *canvas, float center_x, float center_y,
         fill_rect(canvas, x - 1.0f, y - 1.0f,
                   width + 2.0f, height * 0.45f, background);
     } else if (expression == DESK_EXPRESSION_TIRED) {
-        cover_lid(canvas, x, y, width, height, is_right,
-                  0.38f, 0.52f, background);
+        /* Upstream tired: brow(0.38, 0.52) -- hooded, peering out. */
+        paint_brow(canvas, x, y, width, height, 0.38f, 0.52f, is_right,
+                   background);
     }
 
     if (behavior_id == COPET_BEHAVIOR_ATTENTIVE ||
@@ -308,6 +295,23 @@ static void draw_eye(face_canvas_t *canvas, float center_x, float center_y,
     } else if (behavior_id == COPET_BEHAVIOR_NERVOUS) {
         paint_brow(canvas, x, y, width, height, 0.02f, 0.26f, is_right,
                    background);
+    } else if (behavior_id == COPET_BEHAVIOR_CAT) {
+        /* Upstream cat paint: slanted top lid, almond slit pupil, catchlight. */
+        paint_brow(canvas, x, y, width, height, 0.14f, 0.0f, is_right,
+                   background);
+        const float cx = x + width * 0.5f;
+        const float top = y + height * 0.24f;
+        const float bot = y + height * 0.9f;
+        const float midy = (top + bot) * 0.5f;
+        float half = width * 0.105f;
+        if (half < 2.0f) { half = 2.0f; }
+        const float pupil[4][2] = {
+            {cx, top}, {cx + half, midy}, {cx, bot}, {cx - half, midy},
+        };
+        fill_polygon(canvas, pupil, 4, background);
+        const float glint = top + (bot - top) * 0.36f;
+        fill_ellipse(canvas, cx - 2.0f, glint - 2.0f,
+                     cx + 2.0f, glint + 2.0f, eye_color);
     }
 }
 
@@ -485,6 +489,204 @@ static float lid_openness(float u, int reps)
         return 1.0f - smoothstep(seg / close);
     }
     return smoothstep((seg - close) / (1.0f - close));
+}
+
+/* ---- Faithful port of the upstream sleepy nap timeline (moods/sleepy.py) ---- */
+static void sleepy_gaze(float now, float *gx, float *gy)
+{
+    const float glance = 2.2f;
+    const float g = now / glance;
+    const int i = (int)g;
+    float tx[2];
+    float ty[2];
+    for (int k = 0; k < 2; ++k) {
+        const int n = i + k;
+        if (deterministic_rand(n, 7, 0) < 0.3f) {
+            tx[k] = 0.0f;
+            ty[k] = 0.0f;
+        } else {
+            tx[k] = (deterministic_rand(n, 0, 0) * 2.0f - 1.0f) * 15.0f;
+            ty[k] = (deterministic_rand(n, 1, 0) * 2.0f - 1.0f) * 6.0f;
+        }
+    }
+    const float e = smoothstep(fminf(1.0f, (g - (float)i) / 0.35f));
+    *gx = tx[0] + (tx[1] - tx[0]) * e;
+    *gy = ty[0] + (ty[1] - ty[0]) * e;
+}
+
+static float sleepy_blink(float now)
+{
+    const float g = now / 2.2f;
+    const int gi = (int)g;
+    const float f = g - (float)gi;
+    if (f > 0.18f || deterministic_rand(gi, 3, 0) > 0.4f) {
+        return 0.0f;
+    }
+    return sinf(f / 0.18f * 3.14159265f);
+}
+
+/* (visible eye height, gaze x, gaze y, zzz phase or -1) for the instant `now`. */
+static void sleepy_state(float now, float *vis, float *sx, float *sy,
+                         float *zzz)
+{
+    const float look = 5.0f;
+    const float close = 0.9f;
+    const float hold = 1.4f;
+    const float shudder = 0.35f;
+    const float settle = 0.9f;
+    const float period = look + close + hold + shudder + settle;   /* 8.55 */
+    const float asleep = 1.0f;
+    const float squint = 11.0f;
+    const float wake = 18.0f;
+
+    const float window_start = floorf(now / period) * period;
+    float t = now - window_start;
+    float lx;
+    float ly;
+    sleepy_gaze(now, &lx, &ly);
+    const float bob = sinf(now * 1.7f);
+    *zzz = -1.0f;
+
+    if (t < look ||
+        deterministic_rand((int)(now / period), 0, 0) >= 0.5f) {
+        *vis = squint + (asleep - squint) * sleepy_blink(now);
+        *sx = lx;
+        *sy = ly + bob;
+        return;
+    }
+    float ax;
+    float ay;
+    sleepy_gaze(window_start + look, &ax, &ay);
+    t -= look;
+    if (t < close) {
+        const float e = smoothstep(t / close);
+        *vis = squint + (asleep - squint) * e;
+        *sx = ax;
+        *sy = ay + bob * (1.0f - e);
+        return;
+    }
+    t -= close;
+    if (t < hold) {
+        *vis = asleep;
+        *sx = ax;
+        *sy = ay;
+        *zzz = t / hold;
+        return;
+    }
+    t -= hold;
+    if (t < shudder) {
+        const float f = t / shudder;
+        const float tr = 1.0f - f;
+        *vis = asleep + (wake - asleep) * smoothstep(fminf(1.0f, f / 0.5f));
+        *sx = ax + tr * 3.0f * sinf(now * 75.0f);
+        *sy = ay + tr * 1.5f * sinf(now * 90.0f + 1.0f);
+        return;
+    }
+    const float e = smoothstep((t - shudder) / settle);
+    *vis = wake + (squint - wake) * e;
+    *sx = ax + (lx - ax) * e;
+    *sy = ay + (ly + bob - ay) * e;
+}
+
+static void draw_sleepy_eye(face_canvas_t *canvas, float cx, float cy,
+                            float h, color_t color)
+{
+    const float w = 34.0f;
+    const float r = fminf(w, h) * 12.0f / 36.0f;
+    fill_round_rect(canvas, cx - w * 0.5f, cy - h * 0.5f, w, h, r, color);
+}
+
+static void draw_sleepy(face_canvas_t *canvas, float now, color_t color)
+{
+    float vis;
+    float sx;
+    float sy;
+    float zzz;
+    sleepy_state(now, &vis, &sx, &sy, &zzz);
+    draw_sleepy_eye(canvas, 41.0f + sx, 32.0f + sy, vis, color);
+    draw_sleepy_eye(canvas, 87.0f + sx, 32.0f + sy, vis, color);
+    if (zzz >= 0.0f) {
+        for (int i = 0; i < 3; ++i) {
+            const float a = zzz * 3.0f - (float)i;
+            if (a >= 0.0f) {
+                const float zx = 87.0f + sx + 12.0f + (float)i * 5.0f;
+                const float zy = 32.0f - 6.0f - (float)i * 6.0f -
+                                 fminf(1.0f, a) * 6.0f;
+                draw_z(canvas, zx, zy, 4.0f + (float)i * 2.0f, color);
+            }
+        }
+    }
+}
+
+/* ---- Faithful port of the upstream zen leaves (vibes/zen.py) ---- */
+static const float ZEN_WIND_A[3] = {1.8f, 0.9f, 0.5f};
+static const float ZEN_WIND_W[3] = {0.10f, 0.29f, 0.73f};
+static const float ZEN_WIND_P[3] = {0.0f, 1.7f, 4.2f};
+
+static float zen_push(float t0, float t1)
+{
+    float s = 6.5f * (t1 - t0);
+    for (int k = 0; k < 3; ++k) {
+        s += ZEN_WIND_A[k] *
+             (cosf(ZEN_WIND_W[k] * t0 + ZEN_WIND_P[k]) -
+              cosf(ZEN_WIND_W[k] * t1 + ZEN_WIND_P[k])) / ZEN_WIND_W[k];
+    }
+    return s;
+}
+
+static void draw_zen_leaves(face_canvas_t *canvas, float now, color_t color)
+{
+    static const float shape[10][2] = {
+        {0.0f, 1.05f}, {-0.5f, 0.4f}, {-0.68f, -0.3f}, {-0.5f, -0.82f},
+        {-0.22f, -0.98f}, {0.0f, -0.46f}, {0.22f, -0.98f}, {0.5f, -0.82f},
+        {0.68f, -0.3f}, {0.5f, 0.4f},
+    };
+    float windv = 6.5f;
+    for (int k = 0; k < 3; ++k) {
+        windv += ZEN_WIND_A[k] * sinf(ZEN_WIND_W[k] * now + ZEN_WIND_P[k]);
+    }
+    for (int i = 0; i < 9; ++i) {
+        const float period = 14.0f + (float)(i % 4) * 2.0f;
+        const float u = now / period + (float)i * 0.41f;
+        const int cyc = (int)u;
+        const float el = (u - (float)cyc) * period;
+        const int base = i * 9 + cyc * 131;
+#define ZEN_R(n) deterministic_rand(base, (n), 0)
+        const float m = ZEN_R(0);
+        const float vfall = 6.0f + m * 10.0f;
+        const float sail = 0.5f + (1.0f - m) * 1.7f + ZEN_R(1) * 0.7f;
+        const float lag = m * 0.6f + ZEN_R(2) * 0.6f;
+        const float fph = el * (2.0f + (1.0f - m) * 3.0f) + ZEN_R(3) * 6.0f;
+        const float x = -10.0f + ZEN_R(4) * 128.0f * 0.35f +
+                        sail * zen_push(now - lag - el, now - lag) +
+                        sinf(fph) * (1.8f + (1.0f - m) * 3.2f) *
+                            (0.6f + windv * 0.07f);
+        const float y = -7.0f + ZEN_R(5) * 5.0f + vfall * el +
+                        sinf(fph * 0.5f) * 1.6f * (1.0f - m);
+        if (x > 137.0f || y > 73.0f) {
+            continue;
+        }
+        const float ang = el * (0.5f + (1.0f - m) * 1.3f) *
+                              (ZEN_R(6) > 0.5f ? 1.0f : -1.0f) +
+                          cosf(fph) * 0.6f + ZEN_R(7) * 6.0f;
+        const float fore = 0.4f + 0.6f *
+            fabsf(cosf(el * (0.7f + (1.0f - m)) + ZEN_R(8) * 6.0f));
+        const float wid = (2.4f + ZEN_R(1) * 1.8f) * fore;
+        const float lng = 3.0f + ZEN_R(2) * 3.0f;
+        const float bend = (ZEN_R(6) - 0.5f) * 0.9f;
+        const float ca = cosf(ang);
+        const float sa = sinf(ang);
+        float pts[10][2];
+        for (int p = 0; p < 10; ++p) {
+            const float bx = (shape[p][0] + bend * shape[p][1] * shape[p][1]) *
+                             wid;
+            const float by = shape[p][1] * lng;
+            pts[p][0] = x + bx * ca - by * sa;
+            pts[p][1] = y + bx * sa + by * ca;
+        }
+        fill_polygon(canvas, pts, 10, color);
+#undef ZEN_R
+    }
 }
 
 static void draw_smoke_curl(face_canvas_t *canvas, float now,
@@ -941,35 +1143,7 @@ static void draw_behavior_overlay_layer(
         draw_arc(canvas, 8.0f, 1.0f, 128.0f - 9.0f, 64.0f - 12.0f,
                  180, 360, 3, eye_color);
     } else if (behavior->id == COPET_BEHAVIOR_ZEN) {
-        /* Upstream vibe: leaves drift down while the eyes rest as calm slits. */
-        const float now = behavior->elapsed_ms / 1000.0f;
-        static const float leaf[10][2] = {
-            {0.0f, 1.05f}, {-0.5f, 0.4f}, {-0.68f, -0.3f}, {-0.5f, -0.82f},
-            {-0.22f, -0.98f}, {0.0f, -0.46f}, {0.22f, -0.98f}, {0.5f, -0.82f},
-            {0.68f, -0.3f}, {0.5f, 0.4f},
-        };
-        for (int i = 0; i < 6; ++i) {
-            const float period = 12.0f + (float)(i % 4) * 2.0f;
-            const float u = now / period + (float)i * 0.41f;
-            const float el = (u - floorf(u)) * period;
-            const float m = deterministic_rand(i, 0, 0);
-            const float x = 6.0f + deterministic_rand(i, 4, 0) * 116.0f +
-                            sinf(el * (1.2f + m) + (float)i) * 6.0f;
-            const float y = -6.0f + (5.0f + m * 9.0f) * el;
-            if (y > 70.0f) { continue; }
-            const float ang = el * (0.6f + m) + (float)i;
-            const float ca = cosf(ang);
-            const float sa = sinf(ang);
-            const float sz = 3.0f + m * 1.5f;
-            float pts[10][2];
-            for (int p = 0; p < 10; ++p) {
-                const float bx = leaf[p][0] * sz;
-                const float by = leaf[p][1] * (sz + 1.0f);
-                pts[p][0] = x + bx * ca - by * sa;
-                pts[p][1] = y + bx * sa + by * ca;
-            }
-            fill_polygon(canvas, pts, 10, eye_color);
-        }
+        draw_zen_leaves(canvas, behavior->elapsed_ms / 1000.0f, eye_color);
     } else if (behavior->id == COPET_BEHAVIOR_DICE_ROLL) {
         /* Upstream vibe: a d20 hexagon tumbles ~1.4s then holds a number. */
         const float t = behavior->elapsed_ms / 1000.0f;
@@ -1069,10 +1243,16 @@ static void render_face_layers(face_canvas_t *canvas,
     apply_behavior_gesture_layer(&pose, behavior);
     apply_behavior_transform_layer(&pose, behavior);
 
+    const bool base_neutral = behavior == NULL ||
+        behavior->id == COPET_BEHAVIOR_NEUTRAL;
     const float left_x = 41.0f + pose.gaze_x + pose.motion_x;
     const float right_x = 87.0f + pose.gaze_x + pose.motion_x;
     const float center_y = 32.0f + pose.gaze_y + pose.motion_y;
-    if (behavior != NULL && behavior->id == COPET_BEHAVIOR_LOVELY) {
+    if (base_neutral && desk != NULL &&
+        desk->expression == DESK_EXPRESSION_SLEEPY) {
+        /* Upstream sleepy is a bare mood: it draws its own nap timeline. */
+        draw_sleepy(canvas, now, eye_color);
+    } else if (behavior != NULL && behavior->id == COPET_BEHAVIOR_LOVELY) {
         /* Smitten: two hearts beat where the eyes would be. */
         const float beat = heart_beat(behavior->elapsed_ms / 1000.0f);
         const float size = 28.0f * (1.0f + 0.16f * beat);
@@ -1095,14 +1275,7 @@ static void render_face_layers(face_canvas_t *canvas,
 
     draw_behavior_overlay_layer(canvas, behavior, eye_color);
 
-    const bool behavior_is_neutral = behavior == NULL ||
-        behavior->id == COPET_BEHAVIOR_NEUTRAL;
-    if (behavior_is_neutral && desk != NULL &&
-        desk->expression == DESK_EXPRESSION_SLEEPY &&
-        fmodf(now, 8.55f) > 5.9f && fmodf(now, 8.55f) < 7.3f) {
-        draw_z(canvas, 105.0f, 25.0f, 5.0f, eye_color);
-        draw_z(canvas, 112.0f, 16.0f, 7.0f, eye_color);
-    }
+    const bool behavior_is_neutral = base_neutral;
     if (behavior_is_neutral && desk != NULL &&
         desk->vibe == DESK_VIBE_SMOKING) {
         draw_smoking(canvas, now, eye_color, rgb332(65, 170, 60));

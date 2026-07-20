@@ -5,26 +5,35 @@
 #include <stdint.h>
 
 /*
- * Turns a stream of microphone loudness samples (0..255) into a stable
- * "there is sustained sound around" signal, used to show the `listening`
- * emotion. This is intentionally not a music classifier: it reacts to
- * sustained ambient sound / rhythm, with smoothing + hysteresis + debounce so
- * a single clap or a brief pause does not toggle it. Pure logic, no hardware,
- * so the thresholds and timing are verified by host tests.
+ * Turns a stream of microphone loudness samples (0..255) into a stable "music
+ * is playing" signal for the listening emotion.
+ *
+ * It reacts to ongoing *fluctuation*, not absolute loudness: activity is the
+ * smoothed frame-to-frame change of the level (total variation). A steady
+ * sound -- room hum, a fan, a mic DC offset, constant noise -- barely changes
+ * between frames, so its activity stays ~0 and it is ignored no matter how
+ * loud. A one-off jump (silence -> loud) is a single spike that decays inside a
+ * few frames, shorter than the sustain window, so it does not trigger either.
+ * Music keeps the level moving, so activity stays high and, once sustained,
+ * shows the listening face. Hysteresis + debounce stop chattering. Pure logic,
+ * verified by host tests.
  */
 
 enum {
-    MUSIC_ON_LEVEL = 40,      /* smoothed level to start listening */
-    MUSIC_OFF_LEVEL = 22,     /* smoothed level to drop below (hysteresis) */
-    MUSIC_SUSTAIN_MS = 1500,  /* loud this long -> listening */
-    MUSIC_QUIET_MS = 1200,    /* quiet this long -> stop listening */
+    MUSIC_MIN_LEVEL = 10,      /* ignore near-silence regardless of activity */
+    MUSIC_ACTIVITY_ON = 10,    /* sustained fluctuation needed to start */
+    MUSIC_ACTIVITY_OFF = 5,    /* fluctuation to keep it (hysteresis) */
+    MUSIC_SUSTAIN_MS = 1200,   /* activity this long -> listening */
+    MUSIC_QUIET_MS = 1500,     /* below activity this long -> stop */
 };
 
 typedef struct {
-    uint16_t level;           /* smoothed loudness (EMA of the raw samples) */
+    uint16_t level;           /* fast EMA of the raw loudness */
+    uint16_t previous;        /* last frame's level, for the change measure */
+    uint16_t activity;        /* smoothed |level - previous| */
     uint32_t timing_start_ms; /* when the pending on/off transition began */
-    bool timing;              /* a transition is currently being timed */
-    bool listening;           /* debounced output */
+    bool timing;
+    bool listening;
 } music_detector_t;
 
 void music_detector_init(music_detector_t *detector);
