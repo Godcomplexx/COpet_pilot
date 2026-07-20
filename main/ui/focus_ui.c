@@ -1,13 +1,11 @@
 #include "ui/focus_ui.h"
-#include "ui/pip_face_port.h"
 #include "ui/ui_canvas.h"
 
 #include <stddef.h>
 #include <stdio.h>
 
 void focus_ui_render(uint8_t *framebuffer, int width, int height,
-                     const focus_mode_t *focus,
-                     const copet_behavior_view_t *behavior)
+                     const focus_mode_t *focus)
 {
     if (framebuffer == NULL || focus == NULL || width <= 0 || height <= 0) {
         return;
@@ -24,7 +22,8 @@ void focus_ui_render(uint8_t *framebuffer, int width, int height,
     ui_fill_rect(&canvas, 0, 0, width, height, background);
     ui_draw_scanlines(&canvas, scanline);
     ui_draw_text(&canvas, 8, 6, "FOCUS MODE", 3, phosphor);
-    ui_draw_text(&canvas, 192, 8, "25/5", 2, muted);
+    ui_draw_text(&canvas, 192, 8, focus_mode_preset_label(focus), 2,
+                 focus->state == FOCUS_TIMER_READY ? phosphor : muted);
     ui_draw_dashed_horizontal(&canvas, 6, 29, 228, grid);
 
     if (focus->state == FOCUS_TIMER_RUNNING) {
@@ -37,9 +36,6 @@ void focus_ui_render(uint8_t *framebuffer, int width, int height,
         ui_draw_text(&canvas, 14, 46, ">", 3, muted);
         ui_draw_text(&canvas, 30, 46, focus_mode_status_label(focus), 3, pale);
     }
-    ui_fill_rect(&canvas, 176, 39, 54, 28, background);
-    pip_face_port_render_compact(framebuffer, width, height,
-                                 178, 40, 50, 26, behavior);
 
     ui_draw_terminal_outline(&canvas, 6, 77, 228, 94, grid);
     for (int x = 42; x < 234; x += 36) {
@@ -58,8 +54,8 @@ void focus_ui_render(uint8_t *framebuffer, int width, int height,
     ui_draw_text(&canvas, 40, 104, line, 8, pale);
 
     const uint32_t total_seconds = focus->break_phase
-        ? FOCUS_BREAK_SECONDS
-        : FOCUS_WORK_SECONDS;
+        ? focus_mode_break_seconds(focus)
+        : focus_mode_work_seconds(focus);
     const uint32_t bounded_remaining =
         focus->remaining_seconds < total_seconds
             ? focus->remaining_seconds
@@ -78,7 +74,12 @@ void focus_ui_render(uint8_t *framebuffer, int width, int height,
     ui_draw_dashed_horizontal(&canvas, 6, 201, 228, grid);
     ui_draw_text(&canvas, 8, 208, focus_mode_action_hint(focus), 2, phosphor);
     ui_draw_text(&canvas, 152, 208, "HOLD HOME", 2, phosphor);
-    ui_draw_text(&canvas, 8, 228, "STATE SAVED", 2, muted);
-    ui_draw_text(&canvas, 184, 228, focus->break_phase ? "5 MIN" : "25 MIN",
+    ui_draw_text(&canvas, 8, 228,
+                 focus->state == FOCUS_TIMER_READY ? "TURN TIME" : "STATE SAVED",
                  2, muted);
+    const uint32_t phase_minutes = (focus->break_phase
+        ? focus_mode_break_seconds(focus)
+        : focus_mode_work_seconds(focus)) / 60U;
+    snprintf(line, sizeof(line), "%lu MIN", (unsigned long)phase_minutes);
+    ui_draw_text(&canvas, 184, 228, line, 2, muted);
 }

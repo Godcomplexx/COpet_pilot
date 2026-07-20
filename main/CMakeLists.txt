@@ -11,6 +11,7 @@ idf_component_register(
         "modes/menu_mode.c"
         "modes/settings_mode.c"
         "services/weather_service.c"
+        "services/wifi_credentials.c"
         "services/wifi_service.c"
         "ui/boot_ui.c"
         "ui/desk_ui.c"

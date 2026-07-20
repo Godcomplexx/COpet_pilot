@@ -25,6 +25,11 @@ typedef enum {
     COPET_BEHAVIOR_CONNECTING,
     COPET_BEHAVIOR_ZEN,
     COPET_BEHAVIOR_DICE_ROLL,
+    /* v2 group: richer touch affection, calm break, connection anxiety. */
+    COPET_BEHAVIOR_HAPPY,
+    COPET_BEHAVIOR_KAWAII,
+    COPET_BEHAVIOR_CHILL,
+    COPET_BEHAVIOR_NERVOUS,
     COPET_BEHAVIOR_LEGACY_SCARED,
     COPET_BEHAVIOR_ID_COUNT,
 } copet_behavior_id_t;
@@ -95,6 +100,7 @@ typedef struct {
     uint32_t transient_deadline_ms;
     uint32_t followup_duration_ms;
     uint32_t last_activity_ms;
+    uint32_t last_touch_ms;
     uint32_t next_p3_ms;
     uint32_t wifi_started_ms;
     uint32_t focus_started_ms;
@@ -104,8 +110,10 @@ typedef struct {
     copet_behavior_id_t p3_history[4];
     copet_behavior_focus_state_t focus_state;
     uint8_t p3_history_count;
+    uint8_t touch_streak;
     bool p3_seen[2];
     bool wifi_connecting;
+    bool nervous_shown;
     bool shake_pending;
     bool desk_active;
     bool initialized;

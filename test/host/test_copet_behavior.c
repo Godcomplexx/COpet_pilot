@@ -185,6 +185,87 @@ static void test_p3_cooldown_history_and_cancel(void)
           COPET_BEHAVIOR_NEUTRAL);
 }
 
+static void test_touch_streak_happy_kawaii(void)
+{
+    copet_behavior_t engine;
+    copet_behavior_init(&engine, 0, 9);
+    update_at(&engine, true, 0);
+    const copet_behavior_event_t touch = event(
+        COPET_BEHAVIOR_EVENT_TOUCH_SHORT, 0);
+
+    /* First tap (not long-idle, no prior tap) is a plain attentive. */
+    copet_behavior_post(&engine, &touch, 2000);
+    CHECK(update_at(&engine, true, 2000) == COPET_BEHAVIOR_ATTENTIVE);
+
+    /* Second tap within the streak window escalates to happy. */
+    copet_behavior_post(&engine, &touch, 2500);
+    CHECK(update_at(&engine, true, 2500) == COPET_BEHAVIOR_HAPPY);
+
+    /* Third quick tap becomes kawaii. */
+    copet_behavior_post(&engine, &touch, 3000);
+    CHECK(update_at(&engine, true, 3000) == COPET_BEHAVIOR_KAWAII);
+
+    /* A tap after the window resets the streak back to attentive. */
+    copet_behavior_post(&engine, &touch, 6000);
+    CHECK(update_at(&engine, true, 6000) == COPET_BEHAVIOR_ATTENTIVE);
+}
+
+static void test_chill_on_break(void)
+{
+    copet_behavior_t engine;
+    copet_behavior_init(&engine, 0, 10);
+    update_at(&engine, false, 0);
+
+    copet_behavior_event_t focus = event(
+        COPET_BEHAVIOR_EVENT_FOCUS_CHANGED,
+        COPET_BEHAVIOR_FOCUS_RUNNING_BREAK);
+    copet_behavior_post(&engine, &focus, 100);
+    CHECK(update_at(&engine, false, 100) == COPET_BEHAVIOR_CHILL);
+    CHECK(copet_behavior_get_view(&engine)->priority ==
+          COPET_BEHAVIOR_PRIORITY_P2);
+
+    /* Running work still wins as focused; a paused break returns to neutral. */
+    focus.value = COPET_BEHAVIOR_FOCUS_RUNNING_WORK;
+    copet_behavior_post(&engine, &focus, 200);
+    CHECK(update_at(&engine, false, 200) == COPET_BEHAVIOR_FOCUSED);
+    focus.value = COPET_BEHAVIOR_FOCUS_PAUSED_BREAK;
+    copet_behavior_post(&engine, &focus, 300);
+    CHECK(update_at(&engine, false, 300) == COPET_BEHAVIOR_NEUTRAL);
+}
+
+static void test_nervous_wifi_escalation(void)
+{
+    copet_behavior_t engine;
+    copet_behavior_init(&engine, 0, 11);
+    update_at(&engine, true, 0);
+    const copet_behavior_event_t wifi_on = event(
+        COPET_BEHAVIOR_EVENT_WIFI_CHANGED, 1);
+    copet_behavior_post(&engine, &wifi_on, 100);
+    CHECK(update_at(&engine, true, 100) == COPET_BEHAVIOR_CONNECTING);
+
+    /* Before the 6 s threshold it is still plain connecting. */
+    CHECK(update_at(&engine, true, 5000) == COPET_BEHAVIOR_CONNECTING);
+
+    /* At 6 s of connecting a single nervous glance appears. */
+    CHECK(update_at(&engine, true, 6100) == COPET_BEHAVIOR_NERVOUS);
+    CHECK(copet_behavior_get_view(&engine)->priority ==
+          COPET_BEHAVIOR_PRIORITY_P1);
+
+    /* After it ends, connecting resumes and nervous does not repeat. */
+    CHECK(update_at(&engine, true, 7700) == COPET_BEHAVIOR_CONNECTING);
+    CHECK(update_at(&engine, true, 9000) == COPET_BEHAVIOR_CONNECTING);
+
+    /* Past the 10 s connecting window the face returns to neutral. */
+    CHECK(update_at(&engine, true, 10100) == COPET_BEHAVIOR_NEUTRAL);
+
+    /* A fresh connecting episode (off then on) can show nervous again. */
+    const copet_behavior_event_t wifi_off = event(
+        COPET_BEHAVIOR_EVENT_WIFI_CHANGED, 0);
+    copet_behavior_post(&engine, &wifi_off, 15000);
+    copet_behavior_post(&engine, &wifi_on, 20000);
+    CHECK(update_at(&engine, true, 26100) == COPET_BEHAVIOR_NERVOUS);
+}
+
 static void test_wraparound(void)
 {
     copet_behavior_t engine;
@@ -210,6 +291,9 @@ int main(void)
     test_focus_source();
     test_shake_escalation();
     test_p3_cooldown_history_and_cancel();
+    test_touch_streak_happy_kawaii();
+    test_chill_on_break();
+    test_nervous_wifi_escalation();
     test_wraparound();
     TEST_REPORT("copet_behavior");
 }

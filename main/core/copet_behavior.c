@@ -10,8 +10,13 @@ enum {
     DOUBLE_BLINK_MS = 480,
     LOOK_MS = 1200,
     ACKNOWLEDGE_MS = 450,
+    HAPPY_MS = 1200,
+    KAWAII_MS = 2500,
+    NERVOUS_MS = 1500,
     LEGACY_SCARED_MS = 1600,
     WIFI_CONNECTING_MAX_MS = 10000,
+    WIFI_NERVOUS_MS = 6000,
+    TOUCH_STREAK_MS = 1500,
     LONG_IDLE_TOUCH_MS = 30000,
     SHAKE_WINDOW_MS = 5000,
     P3_IDLE_MS = 90000,
@@ -58,11 +63,15 @@ static uint32_t duration_for(copet_behavior_id_t id)
     case COPET_BEHAVIOR_LOOK_LEFT:
     case COPET_BEHAVIOR_LOOK_RIGHT: return LOOK_MS;
     case COPET_BEHAVIOR_ACKNOWLEDGE: return ACKNOWLEDGE_MS;
+    case COPET_BEHAVIOR_HAPPY: return HAPPY_MS;
+    case COPET_BEHAVIOR_KAWAII: return KAWAII_MS;
+    case COPET_BEHAVIOR_NERVOUS: return NERVOUS_MS;
     case COPET_BEHAVIOR_ZEN: return 12000;
     case COPET_BEHAVIOR_DICE_ROLL: return 8000;
     case COPET_BEHAVIOR_LEGACY_SCARED: return LEGACY_SCARED_MS;
     case COPET_BEHAVIOR_NEUTRAL:
     case COPET_BEHAVIOR_FOCUSED:
+    case COPET_BEHAVIOR_CHILL:
     case COPET_BEHAVIOR_CONNECTING:
     case COPET_BEHAVIOR_ID_COUNT:
     default: return 0;
@@ -74,7 +83,8 @@ static copet_behavior_priority_t priority_for(copet_behavior_id_t id)
     if (id == COPET_BEHAVIOR_LEGACY_SCARED) {
         return COPET_BEHAVIOR_PRIORITY_P0;
     }
-    if (id == COPET_BEHAVIOR_FOCUSED || id == COPET_BEHAVIOR_NEUTRAL) {
+    if (id == COPET_BEHAVIOR_FOCUSED || id == COPET_BEHAVIOR_NEUTRAL ||
+        id == COPET_BEHAVIOR_CHILL) {
         return COPET_BEHAVIOR_PRIORITY_P2;
     }
     if (is_p3(id)) {
@@ -252,6 +262,10 @@ static void update_view(copet_behavior_t *engine, uint32_t now_ms)
         id = COPET_BEHAVIOR_FOCUSED;
         source = COPET_BEHAVIOR_SOURCE_FOCUS;
         started_ms = engine->focus_started_ms;
+    } else if (engine->focus_state == COPET_BEHAVIOR_FOCUS_RUNNING_BREAK) {
+        id = COPET_BEHAVIOR_CHILL;
+        source = COPET_BEHAVIOR_SOURCE_FOCUS;
+        started_ms = engine->focus_started_ms;
     }
 
     engine->view.id = id;
@@ -295,12 +309,24 @@ void copet_behavior_post(copet_behavior_t *engine,
     case COPET_BEHAVIOR_EVENT_TOUCH_SHORT: {
         const bool long_idle = now_ms - engine->last_activity_ms >=
                                LONG_IDLE_TOUCH_MS;
+        /* A quick sequence of taps escalates attentive -> happy -> kawaii. */
+        const bool in_streak = !long_idle &&
+            (now_ms - engine->last_touch_ms) <= TOUCH_STREAK_MS;
+        engine->touch_streak = in_streak
+            ? (uint8_t)(engine->touch_streak + 1U) : 1U;
+        engine->last_touch_ms = now_ms;
         register_activity(engine, now_ms);
         if (long_idle && start_transient(
                 engine, COPET_BEHAVIOR_DOUBLE_BLINK,
                 COPET_BEHAVIOR_SOURCE_INPUT, now_ms)) {
             engine->followup_id = COPET_BEHAVIOR_ATTENTIVE;
             engine->followup_duration_ms = ATTENTIVE_MS;
+        } else if (engine->touch_streak >= 3U) {
+            start_transient(engine, COPET_BEHAVIOR_KAWAII,
+                            COPET_BEHAVIOR_SOURCE_INPUT, now_ms);
+        } else if (engine->touch_streak == 2U) {
+            start_transient(engine, COPET_BEHAVIOR_HAPPY,
+                            COPET_BEHAVIOR_SOURCE_INPUT, now_ms);
         } else {
             start_transient(engine, COPET_BEHAVIOR_ATTENTIVE,
                             COPET_BEHAVIOR_SOURCE_INPUT, now_ms);
@@ -358,8 +384,9 @@ void copet_behavior_post(copet_behavior_t *engine,
             event->value <= COPET_BEHAVIOR_FOCUS_PAUSED_BREAK) {
             const copet_behavior_focus_state_t new_state =
                 (copet_behavior_focus_state_t)event->value;
-            if (new_state == COPET_BEHAVIOR_FOCUS_RUNNING_WORK &&
-                engine->focus_state != COPET_BEHAVIOR_FOCUS_RUNNING_WORK) {
+            if ((new_state == COPET_BEHAVIOR_FOCUS_RUNNING_WORK ||
+                 new_state == COPET_BEHAVIOR_FOCUS_RUNNING_BREAK) &&
+                engine->focus_state != new_state) {
                 engine->focus_started_ms = now_ms;
             }
             engine->focus_state = new_state;
@@ -369,6 +396,7 @@ void copet_behavior_post(copet_behavior_t *engine,
         const bool connecting = event->value != 0;
         if (connecting && !engine->wifi_connecting) {
             engine->wifi_started_ms = now_ms;
+            engine->nervous_shown = false;
         }
         engine->wifi_connecting = connecting;
         break;
@@ -398,12 +426,26 @@ void copet_behavior_update(copet_behavior_t *engine,
         finish_transient(engine, now_ms, true);
     }
 
+    /* A P1 nervous glance appears when Wi-Fi has been connecting too long,
+     * once per connecting episode, only while nothing else is transient. */
+    if (engine->wifi_connecting && !engine->nervous_shown &&
+        engine->transient_id == COPET_BEHAVIOR_NEUTRAL &&
+        time_reached(now_ms, engine->wifi_started_ms + WIFI_NERVOUS_MS) &&
+        !time_reached(now_ms,
+                      engine->wifi_started_ms + WIFI_CONNECTING_MAX_MS)) {
+        if (start_transient(engine, COPET_BEHAVIOR_NERVOUS,
+                            COPET_BEHAVIOR_SOURCE_WIFI, now_ms)) {
+            engine->nervous_shown = true;
+        }
+    }
+
     const bool higher_active =
         engine->transient_id != COPET_BEHAVIOR_NEUTRAL ||
         (engine->wifi_connecting &&
          !time_reached(now_ms,
                        engine->wifi_started_ms + WIFI_CONNECTING_MAX_MS)) ||
-        engine->focus_state == COPET_BEHAVIOR_FOCUS_RUNNING_WORK;
+        engine->focus_state == COPET_BEHAVIOR_FOCUS_RUNNING_WORK ||
+        engine->focus_state == COPET_BEHAVIOR_FOCUS_RUNNING_BREAK;
     if (engine->desk_active && !higher_active &&
         time_reached(now_ms, engine->next_p3_ms)) {
         const copet_behavior_id_t id = choose_p3(engine, now_ms);
@@ -439,6 +481,10 @@ const char *copet_behavior_label(copet_behavior_id_t id)
     case COPET_BEHAVIOR_CONNECTING: return "CONNECTING";
     case COPET_BEHAVIOR_ZEN: return "ZEN";
     case COPET_BEHAVIOR_DICE_ROLL: return "DICE";
+    case COPET_BEHAVIOR_HAPPY: return "HAPPY";
+    case COPET_BEHAVIOR_KAWAII: return "KAWAII";
+    case COPET_BEHAVIOR_CHILL: return "CHILL";
+    case COPET_BEHAVIOR_NERVOUS: return "NERVOUS";
     case COPET_BEHAVIOR_LEGACY_SCARED: return "SCARED";
     case COPET_BEHAVIOR_NEUTRAL:
     case COPET_BEHAVIOR_ID_COUNT:

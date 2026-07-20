@@ -20,6 +20,37 @@ menu "CoPet Pilot"
         help
             Stored only in the local sdkconfig file. Never print it to logs.
 
+    config COPET_WIFI_SSID_2
+        string "Wi-Fi SSID (2nd network, optional)"
+        default ""
+        depends on COPET_WIFI_ENABLED
+        help
+            Optional second known network. When two or more networks are set,
+            the device scans the air on boot and reconnect and joins the
+            highest-priority known network in range, so it works at more than
+            one location without reflashing. Leave empty to disable.
+
+    config COPET_WIFI_PASSWORD_2
+        string "Wi-Fi password (2nd network)"
+        default ""
+        depends on COPET_WIFI_ENABLED
+        help
+            Password for the 2nd network. Local sdkconfig only; never logged.
+
+    config COPET_WIFI_SSID_3
+        string "Wi-Fi SSID (3rd network, optional)"
+        default ""
+        depends on COPET_WIFI_ENABLED
+        help
+            Optional third known network. Leave empty to disable.
+
+    config COPET_WIFI_PASSWORD_3
+        string "Wi-Fi password (3rd network)"
+        default ""
+        depends on COPET_WIFI_ENABLED
+        help
+            Password for the 3rd network. Local sdkconfig only; never logged.
+
     config COPET_DIAGNOSTIC_BLE_ENABLED
         bool "Enable optional diagnostic BLE at boot"
         default n

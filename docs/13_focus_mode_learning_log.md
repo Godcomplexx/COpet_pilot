@@ -48,3 +48,14 @@ Completing a work period increments the local session counter.
 
 A non-blocking timer stores state and compares monotonic timestamps. It does
 not wait in a delay loop, so other device functions remain responsive.
+
+## Selectable presets
+
+The timer supports several work/break presets: `25/5`, `50/10`, `60/20`,
+`90/20`. While the timer is READY (right after entering Focus), turning the
+encoder cycles the preset — `focus_mode_select_preset` wraps both directions
+and resets the remaining time to the new preset's current-phase duration. The
+preset is locked once the timer is RUNNING or PAUSED, so a session's length
+cannot change mid-run. Preset selection and per-preset durations are pure logic
+covered by `test/host/test_focus_mode.c`. Preset 0 stays 25/5 so it matches the
+`FOCUS_WORK_SECONDS`/`FOCUS_BREAK_SECONDS` baseline.

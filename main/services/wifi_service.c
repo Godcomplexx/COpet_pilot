@@ -1,4 +1,5 @@
 #include "services/wifi_service.h"
+#include "services/wifi_credentials.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -15,9 +16,14 @@
 
 static const char *TAG = "copet_wifi";
 
+enum { WIFI_SCAN_MAX_RESULTS = 20 };
+
 static volatile wifi_service_status_t s_status = WIFI_SERVICE_OFF;
 static volatile uint32_t s_retry_count;
 static bool s_started;
+static bool s_multi;
+static wifi_credential_list_t s_networks;
+static wifi_ap_record_t s_scan_records[WIFI_SCAN_MAX_RESULTS];
 static esp_timer_handle_t s_reconnect_timer;
 static esp_event_handler_instance_t s_wifi_event_handler;
 static esp_event_handler_instance_t s_ip_event_handler;
@@ -42,6 +48,41 @@ static esp_err_t initialize_nvs(void)
     return result;
 }
 
+static void build_networks(void)
+{
+    wifi_credentials_clear(&s_networks);
+    wifi_credentials_add(&s_networks,
+                         CONFIG_COPET_WIFI_SSID, CONFIG_COPET_WIFI_PASSWORD);
+    wifi_credentials_add(&s_networks,
+                         CONFIG_COPET_WIFI_SSID_2, CONFIG_COPET_WIFI_PASSWORD_2);
+    wifi_credentials_add(&s_networks,
+                         CONFIG_COPET_WIFI_SSID_3, CONFIG_COPET_WIFI_PASSWORD_3);
+}
+
+static void apply_credential(uint8_t index)
+{
+    const wifi_credential_t *credential = &s_networks.items[index];
+    wifi_config_t station_configuration = {0};
+    snprintf((char *)station_configuration.sta.ssid,
+             sizeof(station_configuration.sta.ssid), "%s", credential->ssid);
+    snprintf((char *)station_configuration.sta.password,
+             sizeof(station_configuration.sta.password), "%s",
+             credential->password);
+    station_configuration.sta.threshold.authmode =
+        credential->password[0] == '\0'
+            ? WIFI_AUTH_OPEN
+            : WIFI_AUTH_WPA2_PSK;
+    station_configuration.sta.pmf_cfg.capable = true;
+    station_configuration.sta.pmf_cfg.required = false;
+
+    const esp_err_t result =
+        esp_wifi_set_config(WIFI_IF_STA, &station_configuration);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi config for '%s' failed: %s",
+                 credential->ssid, esp_err_to_name(result));
+    }
+}
+
 static void connect_now(void)
 {
     s_status = WIFI_SERVICE_CONNECTING;
@@ -51,12 +92,6 @@ static void connect_now(void)
                  esp_err_to_name(result));
         s_status = WIFI_SERVICE_ERROR;
     }
-}
-
-static void reconnect_timer_callback(void *argument)
-{
-    (void)argument;
-    connect_now();
 }
 
 static void schedule_reconnect(void)
@@ -78,12 +113,78 @@ static void schedule_reconnect(void)
     ESP_LOGW(TAG, "Wi-Fi reconnect in %" PRIu32 " s", delay_seconds);
 }
 
+/* Multi-network: scan the air; the scan-done event picks a known SSID. */
+static void start_scan(void)
+{
+    s_status = WIFI_SERVICE_CONNECTING;
+    const wifi_scan_config_t scan_configuration = {0};
+    const esp_err_t result = esp_wifi_scan_start(&scan_configuration, false);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi scan start failed: %s", esp_err_to_name(result));
+        ++s_retry_count;
+        schedule_reconnect();
+    }
+}
+
+static void begin_connection_attempt(void)
+{
+    if (s_multi) {
+        start_scan();
+    } else {
+        connect_now();
+    }
+}
+
+static void handle_scan_done(void)
+{
+    uint16_t found = WIFI_SCAN_MAX_RESULTS;
+    const esp_err_t result =
+        esp_wifi_scan_get_ap_records(&found, s_scan_records);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi scan results unavailable: %s",
+                 esp_err_to_name(result));
+        ++s_retry_count;
+        schedule_reconnect();
+        return;
+    }
+
+    const char *scanned[WIFI_SCAN_MAX_RESULTS];
+    for (uint16_t index = 0; index < found; ++index) {
+        scanned[index] = (const char *)s_scan_records[index].ssid;
+    }
+
+    const int match = wifi_credentials_match(&s_networks, scanned, found);
+    if (match < 0) {
+        ESP_LOGW(TAG, "No known Wi-Fi network in range (%u seen)",
+                 (unsigned)found);
+        ++s_retry_count;
+        schedule_reconnect();
+        return;
+    }
+
+    apply_credential((uint8_t)match);
+    ESP_LOGI(TAG, "Joining known network '%s'", s_networks.items[match].ssid);
+    connect_now();
+}
+
+static void reconnect_timer_callback(void *argument)
+{
+    (void)argument;
+    begin_connection_attempt();
+}
+
 static void wifi_event_handler(void *argument, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
     (void)argument;
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        connect_now();
+        begin_connection_attempt();
+        return;
+    }
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
+        if (s_multi && s_status != WIFI_SERVICE_CONNECTED) {
+            handle_scan_done();
+        }
         return;
     }
     if (event_base == WIFI_EVENT &&
@@ -119,12 +220,14 @@ esp_err_t wifi_service_start(void)
     ESP_LOGI(TAG, "Wi-Fi disabled in menuconfig");
     return ESP_OK;
 #else
-    if (CONFIG_COPET_WIFI_SSID[0] == '\0') {
+    build_networks();
+    if (s_networks.count == 0) {
         s_status = WIFI_SERVICE_NO_CREDENTIALS;
         ESP_LOGW(TAG,
                  "Wi-Fi is not configured; set CoPet Pilot > Wi-Fi SSID in menuconfig");
         return ESP_OK;
     }
+    s_multi = s_networks.count > 1;
 
     s_status = WIFI_SERVICE_STARTING;
     WIFI_RETURN_ON_ERROR(initialize_nvs(), "NVS initialization failed");
@@ -168,29 +271,23 @@ esp_err_t wifi_service_start(void)
             &s_ip_event_handler),
         "IP event handler registration failed");
 
-    wifi_config_t station_configuration = {0};
-    snprintf((char *)station_configuration.sta.ssid,
-             sizeof(station_configuration.sta.ssid), "%s",
-             CONFIG_COPET_WIFI_SSID);
-    snprintf((char *)station_configuration.sta.password,
-             sizeof(station_configuration.sta.password), "%s",
-             CONFIG_COPET_WIFI_PASSWORD);
-    station_configuration.sta.threshold.authmode =
-        CONFIG_COPET_WIFI_PASSWORD[0] == '\0'
-            ? WIFI_AUTH_OPEN
-            : WIFI_AUTH_WPA2_PSK;
-    station_configuration.sta.pmf_cfg.capable = true;
-    station_configuration.sta.pmf_cfg.required = false;
-
     WIFI_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA),
                          "Wi-Fi Station mode failed");
-    WIFI_RETURN_ON_ERROR(
-        esp_wifi_set_config(WIFI_IF_STA, &station_configuration),
-        "Wi-Fi Station configuration failed");
+    /* One network: configure it up front (the proven single-AP path). Two or
+     * more: leave the config to the scan-done handler, which picks whichever
+     * known network is in range at the current location. */
+    if (!s_multi) {
+        apply_credential(0);
+    }
     WIFI_RETURN_ON_ERROR(esp_wifi_start(), "Wi-Fi start failed");
 
-    ESP_LOGI(TAG, "Wi-Fi Station started for SSID '%s'",
-             CONFIG_COPET_WIFI_SSID);
+    if (s_multi) {
+        ESP_LOGI(TAG, "Wi-Fi Station started with %u known networks",
+                 (unsigned)s_networks.count);
+    } else {
+        ESP_LOGI(TAG, "Wi-Fi Station started for SSID '%s'",
+                 s_networks.items[0].ssid);
+    }
     return ESP_OK;
 #endif
 }

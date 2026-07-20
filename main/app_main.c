@@ -542,12 +542,11 @@ static void render_active_mode(copet_mode_t mode, const desk_mode_t *desk,
         break;
     case COPET_MODE_SETTINGS:
         settings_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
-                           desk_mode_get_view(desk), settings, behavior,
+                           desk_mode_get_view(desk), settings,
                            network_status, weather);
         break;
     case COPET_MODE_FOCUS:
-        focus_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT, focus,
-                        behavior);
+        focus_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT, focus);
         break;
     case COPET_MODE_PHONE_BRIDGE:
         diag_ui_render_phone_bridge(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
@@ -556,7 +555,7 @@ static void render_active_mode(copet_mode_t mode, const desk_mode_t *desk,
     case COPET_MODE_MENU:
     default:
         menu_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT, menu,
-                       behavior, network_status);
+                       network_status);
         break;
     }
 }
@@ -879,12 +878,9 @@ void app_main(void)
                      desk_mode_vibe_label(desk_view->vibe),
                      (unsigned long)desk_view->inactivity_seconds);
         }
-        const bool animate_menu_behavior =
-            mode == COPET_MODE_MENU &&
-            displayed_behavior > COPET_BEHAVIOR_NEUTRAL;
-        if ((mode == COPET_MODE_DESK || mode == COPET_MODE_FOCUS ||
-             mode == COPET_MODE_SETTINGS || animate_menu_behavior) &&
-            now_us >= next_desk_frame_us) {
+        /* Only Desk shows the live animated face; other screens redraw on
+         * their own events (Focus timer tick, Wi-Fi/weather status, input). */
+        if (mode == COPET_MODE_DESK && now_us >= next_desk_frame_us) {
             next_desk_frame_us = now_us + DESK_FRAME_INTERVAL_US;
             redraw = true;
         }
@@ -950,6 +946,15 @@ void app_main(void)
                 ESP_LOGI(TAG, "Menu selected: %s",
                          menu_mode_selected(&menu)->label);
                 menu_last_activity_us = now_us;
+                force_redraw = true;
+            } else if (real_step && mode == COPET_MODE_FOCUS &&
+                       focus.state == FOCUS_TIMER_READY) {
+                const int32_t logical_steps =
+                    encoder_position - displayed_encoder_position;
+                focus_mode_select_preset(&focus, logical_steps);
+                play_audio_event(audio_available, COPET_AUDIO_MENU_MOVE);
+                ESP_LOGI(TAG, "Focus preset: %s",
+                         focus_mode_preset_label(&focus));
                 force_redraw = true;
             }
             displayed_encoder_position = encoder_position;
