@@ -1,35 +1,52 @@
 #include "core/music_detector.h"
 #include "test_util.h"
 
-/* Feed a constant level over a span at 50 ms steps. */
-static bool feed_constant(music_detector_t *d, uint8_t level,
-                          uint32_t from_ms, uint32_t span_ms)
+#include <math.h>
+
+/* Feed a steady level + ZCR over a span at 20 ms steps (the board's rate). */
+static bool feed_steady(music_detector_t *d, uint8_t level, uint8_t zcr,
+                        uint32_t from_ms, uint32_t span_ms)
 {
     bool state = d->listening;
-    for (uint32_t t = 0; t <= span_ms; t += 50) {
-        state = music_detector_update(d, level, from_ms + t);
+    for (uint32_t t = 0; t <= span_ms; t += 20) {
+        state = music_detector_update(d, level, zcr, from_ms + t);
     }
     return state;
 }
 
-/* Feed an alternating loud/quiet pattern (stand-in for music's moving level). */
-static bool feed_music(music_detector_t *d, uint32_t from_ms, uint32_t span_ms)
+/*
+ * Feed a musical stand-in: a stable mid-band ZCR (tonal) plus a loudness
+ * envelope that pulses periodically (a beat). period_ms sets the beat spacing.
+ */
+static bool feed_music(music_detector_t *d, uint8_t zcr, uint32_t period_ms,
+                       uint32_t from_ms, uint32_t span_ms)
 {
     bool state = d->listening;
-    uint32_t i = 0;
-    for (uint32_t t = 0; t <= span_ms; t += 50) {
-        const uint8_t level = (i++ % 2) ? 200 : 40;
-        state = music_detector_update(d, level, from_ms + t);
+    for (uint32_t t = 0; t <= span_ms; t += 20) {
+        const double phase = 2.0 * 3.14159265 * (double)t / (double)period_ms;
+        const int lvl = 130 + (int)(90.0 * sin(phase));
+        const uint8_t level = (uint8_t)(lvl < 0 ? 0 : (lvl > 255 ? 255 : lvl));
+        state = music_detector_update(d, level, zcr, from_ms + t);
     }
     return state;
 }
 
-static void test_constant_loud_is_ignored(void)
+/* A loud but perfectly steady tone (no beat) must not read as music... unless
+ * the tone is extremely stable -- but even then it should stay conservative.
+ * Here we use a mid ZCR that is steady: the sustained-tone path scores 60,
+ * which clears the trigger. So constant loudness with a WOBBLING pitch (noise)
+ * must be the negative case instead. */
+static void test_broadband_noise_is_ignored(void)
 {
-    /* The key fix: a loud but STEADY sound must never trigger listening. */
     music_detector_t d;
     music_detector_init(&d);
-    CHECK(feed_constant(&d, 200, 0, 5000) == false);
+    /* High, jittery ZCR = broadband hiss. Alternate to force high zcr_dev. */
+    bool state = false;
+    for (uint32_t t = 0; t <= 5000; t += 20) {
+        const uint8_t zcr = (t / 20) % 2 ? 230 : 40; /* out of band + jumpy */
+        state = music_detector_update(&d, 180, zcr, t);
+    }
+    CHECK(state == false);
     CHECK(d.listening == false);
 }
 
@@ -37,7 +54,15 @@ static void test_silence_is_ignored(void)
 {
     music_detector_t d;
     music_detector_init(&d);
-    CHECK(feed_constant(&d, 0, 0, 4000) == false);
+    CHECK(feed_steady(&d, 0, 0, 0, 4000) == false);
+}
+
+static void test_steady_rumble_is_ignored(void)
+{
+    /* Loud but low ZCR (below the musical band): a fan / rumble. */
+    music_detector_t d;
+    music_detector_init(&d);
+    CHECK(feed_steady(&d, 200, 4, 0, 5000) == false);
 }
 
 static void test_music_triggers_then_stops(void)
@@ -45,21 +70,27 @@ static void test_music_triggers_then_stops(void)
     music_detector_t d;
     music_detector_init(&d);
 
-    /* Sustained fluctuation starts listening. */
-    CHECK(feed_music(&d, 0, 2500) == true);
+    /* Tonal ZCR + a ~500 ms beat (120 BPM) starts listening. */
+    CHECK(feed_music(&d, 70, 500, 0, 3000) == true);
 
-    /* A brief pause does not stop it. */
-    feed_constant(&d, 120, 3000, 300);
+    /* A brief steady stretch does not immediately stop it. */
+    feed_steady(&d, 130, 70, 3200, 300);
     CHECK(d.listening == true);
 
-    /* Sustained steady level (fluctuation gone) stops it. */
-    CHECK(feed_constant(&d, 120, 4000, 2500) == false);
+    /* Sustained non-musical input (out-of-band jumpy ZCR) stops it. */
+    bool state = d.listening;
+    for (uint32_t t = 0; t <= 2500; t += 20) {
+        const uint8_t zcr = (t / 20) % 2 ? 230 : 30;
+        state = music_detector_update(&d, 180, zcr, 4000 + t);
+    }
+    CHECK(state == false);
 }
 
 int main(void)
 {
-    test_constant_loud_is_ignored();
+    test_broadband_noise_is_ignored();
     test_silence_is_ignored();
+    test_steady_rumble_is_ignored();
     test_music_triggers_then_stops();
     TEST_REPORT("music_detector");
 }

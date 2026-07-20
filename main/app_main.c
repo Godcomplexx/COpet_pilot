@@ -630,6 +630,9 @@ void app_main(void)
     int64_t pet_start_ms = 0;
     music_detector_t music;
     music_detector_init(&music);
+#if CONFIG_COPET_MUSIC_DEBUG
+    uint32_t last_music_debug_ms = 0;
+#endif
     desk_mode_t desk;
     menu_mode_t menu;
     focus_mode_t focus;
@@ -1005,8 +1008,20 @@ void app_main(void)
         } else {
             pet_active = false;
         }
+        const uint8_t mic_level = copet_audio_get_mic_level();
+        const uint8_t mic_zcr = copet_audio_get_mic_zcr();
         const bool music_present = music_detector_update(
-            &music, copet_audio_get_mic_level(), (uint32_t)now_ms);
+            &music, mic_level, mic_zcr, (uint32_t)now_ms);
+#if CONFIG_COPET_MUSIC_DEBUG
+        if ((uint32_t)(now_ms - last_music_debug_ms) >= 1000U) {
+            last_music_debug_ms = (uint32_t)now_ms;
+            ESP_LOGI(TAG,
+                     "music: level=%u zcr=%u score=%u listening=%d",
+                     (unsigned)mic_level, (unsigned)mic_zcr,
+                     (unsigned)music_detector_score(&music),
+                     (int)music_present);
+        }
+#endif
         const copet_behavior_context_t behavior_context = {
             .desk_active = mode == COPET_MODE_DESK,
             .touch_hold_ms = touch_hold_ms,

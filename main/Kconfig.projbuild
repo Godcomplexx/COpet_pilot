@@ -60,6 +60,15 @@ menu "CoPet Pilot"
             around. Best-effort: if the mic fails to start, event sounds still
             work. Turn off to run the speaker only.
 
+    config COPET_MUSIC_DEBUG
+        bool "Log microphone music-detector features"
+        default y
+        depends on COPET_MIC_ENABLED
+        help
+            Print level / ZCR / melodicity score once per second to the serial
+            log. Use it to watch the detector while playing music and tune the
+            thresholds in music_detector.h, then turn it off for normal use.
+
     config COPET_DIAGNOSTIC_BLE_ENABLED
         bool "Enable optional diagnostic BLE at boot"
         default n

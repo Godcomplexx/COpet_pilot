@@ -27,3 +27,12 @@ esp_err_t copet_audio_play_event(copet_audio_event_t event);
  * disabled). Updated in the background from the INMP441 on the shared I2S bus.
  */
 uint8_t copet_audio_get_mic_level(void);
+
+/*
+ * Zero-crossing rate of the most recent mic window, normalized to 0..255
+ * (crossings per window scaled up). A rough pitch proxy: near-silence and
+ * low tones cross rarely (low ZCR); broadband hiss/noise crosses often (high
+ * ZCR); tonal/musical content sits in a stable mid range. 0 when the mic is
+ * unavailable or disabled. Read together with copet_audio_get_mic_level().
+ */
+uint8_t copet_audio_get_mic_zcr(void);

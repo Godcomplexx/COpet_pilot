@@ -18,9 +18,25 @@ enum {
     AUDIO_SAMPLE_RATE = 16000,
     AUDIO_BUFFER_FRAMES = 128,
     AUDIO_OUTPUT_GAIN_PERCENT = 25,
-    /* Divisor mapping mean |sample| (0..32767) to a 0..255 loudness. Lower =
-     * more sensitive. Tune on the board against real ambient sound. */
-    AUDIO_MIC_LEVEL_DIVISOR = 24,
+    /* INMP441 left-justifies 24 valid bits in a 32-bit slot. Shifting the raw
+     * word right by this keeps the upper part of that 24-bit range: >>16 threw
+     * away the lower 8 bits where quieter, at-a-distance music lives, so it
+     * read near zero. >>11 keeps ~13 bits, enough for room-level music. */
+    AUDIO_MIC_SHIFT = 11,
+    /* Divisor mapping mean |sample| to a 0..255 loudness after AUDIO_MIC_SHIFT.
+     * Tune so normal listening volume sits near mid-scale and the envelope can
+     * still swing for the beat detector. */
+    AUDIO_MIC_LEVEL_DIVISOR = 40,
+    /* One-pole DC-blocking pole R in Q15 (~0.996). Closer to 32768 = lower
+     * cutoff (removes only slow drift); lower = more aggressive high-pass. */
+    AUDIO_DC_R_Q15 = 32637,
+    /* Amplitude below which a sample counts as "near zero" for ZCR. After the
+     * high-pass the quiet-room signal centers near zero, so a small band
+     * rejects residual noise while letting real audio cross. */
+    AUDIO_ZCR_HYSTERESIS = 150,
+    /* Crossings/sample is tiny; scale it up into the 0..255 ZCR range. At
+     * 16 kHz a 1 kHz tone gives ~2000 crossings/s = 0.125/sample -> ~64. */
+    AUDIO_ZCR_SCALE = 512,
 };
 
 typedef struct {
@@ -57,6 +73,14 @@ static QueueHandle_t s_event_queue;
 static volatile bool s_enabled = true;
 static volatile bool s_mic_active;
 static volatile uint8_t s_mic_level;
+static volatile uint8_t s_mic_zcr;
+/* When the mic is active, TX is enabled once at init and left on so the shared
+ * clock keeps running for the mic; audio_task must then not enable/disable it
+ * per clip. */
+static bool s_tx_always_on;
+/* Persistent state of the mic DC-blocking high-pass filter (see mic_task). */
+static int32_t s_dc_x_prev;
+static int32_t s_dc_y_prev;
 
 static bool get_clip(copet_audio_event_t event, audio_clip_t *clip)
 {
@@ -105,7 +129,8 @@ static int16_t read_scaled_sample(const uint8_t *bytes)
 
 static void write_silence(void)
 {
-    int16_t silence[AUDIO_BUFFER_FRAMES * 2] = {0};
+    /* 32-bit stereo bus: silence is just zeroed 32-bit words. */
+    int32_t silence[AUDIO_BUFFER_FRAMES * 2] = {0};
     size_t bytes_written = 0;
     (void)i2s_channel_write(s_tx_channel, silence, sizeof(silence),
                             &bytes_written, portMAX_DELAY);
@@ -116,7 +141,9 @@ static void audio_task(void *argument)
     (void)argument;
 
     copet_audio_event_t event;
-    int16_t stereo_samples[AUDIO_BUFFER_FRAMES * 2];
+    /* 32-bit stereo bus: each 16-bit PCM sample is left-justified into the
+     * upper half of a 32-bit word so the MAX98357A reads it correctly. */
+    int32_t stereo_samples[AUDIO_BUFFER_FRAMES * 2];
 
     while (true) {
         xQueueReceive(s_event_queue, &event, portMAX_DELAY);
@@ -130,11 +157,13 @@ static void audio_task(void *argument)
             continue;
         }
 
-        const esp_err_t enable_result = i2s_channel_enable(s_tx_channel);
-        if (enable_result != ESP_OK) {
-            ESP_LOGE(TAG, "I2S start failed for %s: %s", clip.name,
-                     esp_err_to_name(enable_result));
-            continue;
+        if (!s_tx_always_on) {
+            const esp_err_t enable_result = i2s_channel_enable(s_tx_channel);
+            if (enable_result != ESP_OK) {
+                ESP_LOGE(TAG, "I2S start failed for %s: %s", clip.name,
+                         esp_err_to_name(enable_result));
+                continue;
+            }
         }
 
         const size_t byte_count = (size_t)(clip.end - clip.start);
@@ -152,8 +181,9 @@ static void audio_task(void *argument)
                 const uint8_t *source =
                     clip.start + (sample_offset + frame) * sizeof(int16_t);
                 const int16_t sample = read_scaled_sample(source);
-                stereo_samples[frame * 2] = sample;
-                stereo_samples[frame * 2 + 1] = sample;
+                const int32_t wide = (int32_t)sample << 16;
+                stereo_samples[frame * 2] = wide;
+                stereo_samples[frame * 2 + 1] = wide;
             }
 
             size_t bytes_written = 0;
@@ -173,40 +203,110 @@ static void audio_task(void *argument)
         write_silence();
         /* One DMA buffer is 8 ms at 16 kHz; let silence reach the amp. */
         vTaskDelay(pdMS_TO_TICKS(12));
-        const esp_err_t disable_result = i2s_channel_disable(s_tx_channel);
-        if (disable_result != ESP_OK) {
-            ESP_LOGE(TAG, "I2S stop failed after %s: %s", clip.name,
-                     esp_err_to_name(disable_result));
+        if (!s_tx_always_on) {
+            const esp_err_t disable_result = i2s_channel_disable(s_tx_channel);
+            if (disable_result != ESP_OK) {
+                ESP_LOGE(TAG, "I2S stop failed after %s: %s", clip.name,
+                         esp_err_to_name(disable_result));
+            }
         }
         ESP_LOGI(TAG, "%s %s", clip.name,
                  sample_offset == mono_samples ? "finished" : "stopped");
     }
 }
 
-/* Background loudness meter for the shared-bus INMP441 (best-effort). */
+/*
+ * Background loudness meter for the INMP441 on its own I2S controller.
+ *
+ * The INMP441 is a 24-bit mic that left-justifies its 24 data bits in a
+ * 32-bit slot. We therefore read 32-bit words and take the top 16 bits as the
+ * effective sample (sample >> 16), which is where the real audio lives; the
+ * lower bits are mic self-noise. Reading it as 16-bit before -- on the shared
+ * 16-bit TX bus -- captured those noise bits instead, so silence and music
+ * looked identical. This dedicated 32-bit path fixes that.
+ */
 static void mic_task(void *argument)
 {
     (void)argument;
-    int16_t samples[AUDIO_BUFFER_FRAMES * 2];
+    int32_t samples[AUDIO_BUFFER_FRAMES * 2];
+#if CONFIG_COPET_MUSIC_DEBUG
+    TickType_t last_diag = 0;
+#endif
     while (true) {
         size_t bytes_read = 0;
         const esp_err_t result = i2s_channel_read(
             s_rx_channel, samples, sizeof(samples), &bytes_read,
             pdMS_TO_TICKS(200));
         if (result != ESP_OK || bytes_read == 0) {
+#if CONFIG_COPET_MUSIC_DEBUG
+            if (xTaskGetTickCount() - last_diag >= pdMS_TO_TICKS(1000)) {
+                last_diag = xTaskGetTickCount();
+                ESP_LOGW(TAG, "mic read: err=%s bytes=%u",
+                         esp_err_to_name(result), (unsigned)bytes_read);
+            }
+#endif
             continue;
         }
         const size_t count = bytes_read / sizeof(samples[0]);
         uint64_t accumulator = 0;
-        for (size_t i = 0; i < count; ++i) {
-            const int32_t sample = samples[i];
-            accumulator += (uint32_t)(sample < 0 ? -sample : sample);
+        uint32_t crossings = 0;
+        /* The INMP441 (L/R tied low) drives ONLY the left slot; the right slot
+         * is always zero. Process even indices (left slot) only.
+         *
+         * A one-pole DC-blocking high-pass filter runs per sample:
+         *     y[n] = x[n] - x[n-1] + R*y[n-1]
+         * Subtracting a single per-window mean (the old approach) left the
+         * mic's low-frequency drift inside each 16 ms window, so the signal
+         * wandered off to one side and never crossed zero -- ZCR read ~0 and
+         * the detector degenerated into a loudness (noise) trigger. This filter
+         * removes only the drift/DC and keeps the audio-band oscillation, so
+         * real crossings appear and ZCR measures tonality again. R is Q15. */
+        uint32_t used = 0;
+        int previous_sign = 0;
+        for (size_t i = 0; i < count; i += 2) {
+            const int32_t x = samples[i] >> AUDIO_MIC_SHIFT;
+            /* y = x - x_prev + R*y_prev, R ~= 0.995 in Q15 (32637/32768). */
+            const int32_t y =
+                x - s_dc_x_prev +
+                (int32_t)(((int64_t)AUDIO_DC_R_Q15 * s_dc_y_prev) >> 15);
+            s_dc_x_prev = x;
+            s_dc_y_prev = y;
+
+            accumulator += (uint32_t)(y < 0 ? -y : y);
+            ++used;
+            int sign = previous_sign;
+            if (y > AUDIO_ZCR_HYSTERESIS) {
+                sign = 1;
+            } else if (y < -AUDIO_ZCR_HYSTERESIS) {
+                sign = -1;
+            }
+            if (previous_sign != 0 && sign != 0 && sign != previous_sign) {
+                ++crossings;
+            }
+            if (sign != 0) { previous_sign = sign; }
         }
-        const uint32_t mean =
-            count > 0 ? (uint32_t)(accumulator / count) : 0;
+        const uint32_t mean = used > 0 ? (uint32_t)(accumulator / used) : 0;
         uint32_t level = mean / AUDIO_MIC_LEVEL_DIVISOR;
         if (level > 255U) { level = 255U; }
         s_mic_level = (uint8_t)level;
+
+        /* Normalize crossings to 0..255 over the left-slot samples actually
+         * used, scaled so a full window of the highest musically meaningful
+         * rate maps near the top of the range. */
+        uint32_t zcr = used > 0
+            ? (crossings * AUDIO_ZCR_SCALE) / used
+            : 0;
+        if (zcr > 255U) { zcr = 255U; }
+        s_mic_zcr = (uint8_t)zcr;
+
+#if CONFIG_COPET_MUSIC_DEBUG
+        if (xTaskGetTickCount() - last_diag >= pdMS_TO_TICKS(1000)) {
+            last_diag = xTaskGetTickCount();
+            ESP_LOGI(TAG, "mic: amp=%u cross=%u level=%u zcr=%u",
+                     (unsigned)mean, (unsigned)crossings,
+                     (unsigned)level, (unsigned)zcr);
+        }
+#endif
     }
 }
 
@@ -218,6 +318,13 @@ esp_err_t copet_audio_init(void)
     const bool want_mic = false;
 #endif
 
+    /* TX (amp) and RX (INMP441) share one controller and one set of pins
+     * (BCLK/WS on 26/25), so they must use the same slot width. The INMP441 is
+     * a 24-bit mic that only yields real audio in a 32-bit slot, so the WHOLE
+     * bus runs at 32 bits: TX left-justifies each 16-bit PCM sample into the
+     * upper half of a 32-bit word (see audio_task), and RX reads 32-bit words
+     * and takes the top 16 bits. Running the bus at 16 bits -- the old setup --
+     * fed the mic only its noise bits, so silence and music looked identical. */
     const i2s_chan_config_t channel_config =
         I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     ESP_RETURN_ON_ERROR(
@@ -228,7 +335,7 @@ esp_err_t copet_audio_init(void)
     const i2s_std_config_t standard_config = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-            I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+            I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = AUDIO_PIN_BCLK,
@@ -256,16 +363,23 @@ esp_err_t copet_audio_init(void)
                         "Audio task creation failed");
 
     if (want_mic && s_rx_channel != NULL) {
-        /* Mic is best-effort: any failure here leaves sound (TX) working. */
-        esp_err_t mic =
-            i2s_channel_init_std_mode(s_rx_channel, &standard_config);
+        /* Mic is best-effort: any failure here leaves sound (TX) working. TX is
+         * enabled once and kept on so the shared clock always drives the mic
+         * (INMP441 is a slave); audio_task then must not toggle TX per clip. */
+        esp_err_t mic = i2s_channel_init_std_mode(s_rx_channel,
+                                                  &standard_config);
         if (mic == ESP_OK) {
+            mic = i2s_channel_enable(s_tx_channel);
+        }
+        if (mic == ESP_OK) {
+            s_tx_always_on = true;
+            write_silence();
             mic = i2s_channel_enable(s_rx_channel);
         }
         if (mic == ESP_OK &&
             xTaskCreate(mic_task, "copet_mic", 3072, NULL, 3, NULL) == pdPASS) {
             s_mic_active = true;
-            ESP_LOGI(TAG, "Mic capture on DIN=%d for listening reaction",
+            ESP_LOGI(TAG, "Mic capture on DIN=%d (32-bit bus) for listening",
                      AUDIO_PIN_MIC_DIN);
         } else {
             ESP_LOGW(TAG, "Mic capture unavailable (%s); sound still works",
@@ -282,6 +396,11 @@ esp_err_t copet_audio_init(void)
 uint8_t copet_audio_get_mic_level(void)
 {
     return s_mic_active ? s_mic_level : 0U;
+}
+
+uint8_t copet_audio_get_mic_zcr(void)
+{
+    return s_mic_active ? s_mic_zcr : 0U;
 }
 
 void copet_audio_set_enabled(bool enabled)
