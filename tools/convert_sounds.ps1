@@ -50,6 +50,10 @@ Convert-Clip `
     "universfield-positive-notification-351299.mp3" `
     "focus_complete.pcm" "0.07" "0.66" `
     "afade=t=in:st=0:d=0.01,afade=t=out:st=0.54:d=0.05"
+Convert-Clip `
+    "freesound_community-angry-grunt-103204.mp3" `
+    "angry_grunt.pcm" "0.0" "0.72" `
+    "afade=t=in:st=0:d=0.01,afade=t=out:st=0.62:d=0.08"
 
 Get-Item (Join-Path $output "*.pcm") |
     Select-Object Name, Length,

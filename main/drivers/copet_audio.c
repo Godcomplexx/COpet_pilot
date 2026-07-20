@@ -14,9 +14,13 @@ enum {
     AUDIO_PIN_BCLK = 26,
     AUDIO_PIN_LRC = 25,
     AUDIO_PIN_DOUT = 27,
+    AUDIO_PIN_MIC_DIN = 34,
     AUDIO_SAMPLE_RATE = 16000,
     AUDIO_BUFFER_FRAMES = 128,
     AUDIO_OUTPUT_GAIN_PERCENT = 25,
+    /* Divisor mapping mean |sample| (0..32767) to a 0..255 loudness. Lower =
+     * more sensitive. Tune on the board against real ambient sound. */
+    AUDIO_MIC_LEVEL_DIVISOR = 24,
 };
 
 typedef struct {
@@ -41,11 +45,18 @@ extern const uint8_t focus_complete_start[]
     asm("_binary_focus_complete_pcm_start");
 extern const uint8_t focus_complete_end[]
     asm("_binary_focus_complete_pcm_end");
+extern const uint8_t angry_grunt_start[]
+    asm("_binary_angry_grunt_pcm_start");
+extern const uint8_t angry_grunt_end[]
+    asm("_binary_angry_grunt_pcm_end");
 
 static const char *TAG = "copet_audio";
 static i2s_chan_handle_t s_tx_channel;
+static i2s_chan_handle_t s_rx_channel;
 static QueueHandle_t s_event_queue;
 static volatile bool s_enabled = true;
+static volatile bool s_mic_active;
+static volatile uint8_t s_mic_level;
 
 static bool get_clip(copet_audio_event_t event, audio_clip_t *clip)
 {
@@ -75,6 +86,10 @@ static bool get_clip(copet_audio_event_t event, audio_clip_t *clip)
     case COPET_AUDIO_FOCUS_COMPLETE:
         *clip = (audio_clip_t){focus_complete_start, focus_complete_end,
                                "FOCUS COMPLETE"};
+        return true;
+    case COPET_AUDIO_ANGRY:
+        *clip = (audio_clip_t){angry_grunt_start, angry_grunt_end,
+                               "ANGRY GRUNT"};
         return true;
     default:
         return false;
@@ -168,12 +183,46 @@ static void audio_task(void *argument)
     }
 }
 
+/* Background loudness meter for the shared-bus INMP441 (best-effort). */
+static void mic_task(void *argument)
+{
+    (void)argument;
+    int16_t samples[AUDIO_BUFFER_FRAMES * 2];
+    while (true) {
+        size_t bytes_read = 0;
+        const esp_err_t result = i2s_channel_read(
+            s_rx_channel, samples, sizeof(samples), &bytes_read,
+            pdMS_TO_TICKS(200));
+        if (result != ESP_OK || bytes_read == 0) {
+            continue;
+        }
+        const size_t count = bytes_read / sizeof(samples[0]);
+        uint64_t accumulator = 0;
+        for (size_t i = 0; i < count; ++i) {
+            const int32_t sample = samples[i];
+            accumulator += (uint32_t)(sample < 0 ? -sample : sample);
+        }
+        const uint32_t mean =
+            count > 0 ? (uint32_t)(accumulator / count) : 0;
+        uint32_t level = mean / AUDIO_MIC_LEVEL_DIVISOR;
+        if (level > 255U) { level = 255U; }
+        s_mic_level = (uint8_t)level;
+    }
+}
+
 esp_err_t copet_audio_init(void)
 {
+#if CONFIG_COPET_MIC_ENABLED
+    const bool want_mic = true;
+#else
+    const bool want_mic = false;
+#endif
+
     const i2s_chan_config_t channel_config =
         I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     ESP_RETURN_ON_ERROR(
-        i2s_new_channel(&channel_config, &s_tx_channel, NULL),
+        i2s_new_channel(&channel_config, &s_tx_channel,
+                        want_mic ? &s_rx_channel : NULL),
         TAG, "I2S channel allocation failed");
 
     const i2s_std_config_t standard_config = {
@@ -185,7 +234,7 @@ esp_err_t copet_audio_init(void)
             .bclk = AUDIO_PIN_BCLK,
             .ws = AUDIO_PIN_LRC,
             .dout = AUDIO_PIN_DOUT,
-            .din = I2S_GPIO_UNUSED,
+            .din = want_mic ? AUDIO_PIN_MIC_DIN : I2S_GPIO_UNUSED,
             .invert_flags = {
                 .mclk_inv = false,
                 .bclk_inv = false,
@@ -206,10 +255,33 @@ esp_err_t copet_audio_init(void)
     ESP_RETURN_ON_FALSE(task_created == pdPASS, ESP_ERR_NO_MEM, TAG,
                         "Audio task creation failed");
 
+    if (want_mic && s_rx_channel != NULL) {
+        /* Mic is best-effort: any failure here leaves sound (TX) working. */
+        esp_err_t mic =
+            i2s_channel_init_std_mode(s_rx_channel, &standard_config);
+        if (mic == ESP_OK) {
+            mic = i2s_channel_enable(s_rx_channel);
+        }
+        if (mic == ESP_OK &&
+            xTaskCreate(mic_task, "copet_mic", 3072, NULL, 3, NULL) == pdPASS) {
+            s_mic_active = true;
+            ESP_LOGI(TAG, "Mic capture on DIN=%d for listening reaction",
+                     AUDIO_PIN_MIC_DIN);
+        } else {
+            ESP_LOGW(TAG, "Mic capture unavailable (%s); sound still works",
+                     esp_err_to_name(mic));
+        }
+    }
+
     ESP_LOGI(TAG,
-             "PCM audio ready: 16 kHz mono clips, BCLK=%d LRC=%d DIN=%d",
+             "PCM audio ready: 16 kHz mono clips, BCLK=%d LRC=%d DOUT=%d",
              AUDIO_PIN_BCLK, AUDIO_PIN_LRC, AUDIO_PIN_DOUT);
     return ESP_OK;
+}
+
+uint8_t copet_audio_get_mic_level(void)
+{
+    return s_mic_active ? s_mic_level : 0U;
 }
 
 void copet_audio_set_enabled(bool enabled)

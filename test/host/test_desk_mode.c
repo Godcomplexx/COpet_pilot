@@ -18,7 +18,11 @@ static void test_motion_classification(void)
           DESK_MOTION_MOVED);
     CHECK(classify(0.86f, 0.0f, 0.50f, 0.0f, 0.0f, 0.0f) ==
           DESK_MOTION_TILTED);
+    /* Rotation/handling (high gyro, ~1g) is carrying -> MOVED, not a hit. */
     CHECK(classify(0.0f, 0.0f, 1.0f, 100.0f, 80.0f, 50.0f) ==
+          DESK_MOTION_MOVED);
+    /* A sharp acceleration spike (~>2g) is a hit -> SHAKEN. */
+    CHECK(classify(2.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f) ==
           DESK_MOTION_SHAKEN);
     CHECK(classify(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f) ==
           DESK_MOTION_FALLING);

@@ -19,6 +19,7 @@
 
 #include "core/copet_behavior.h"
 #include "core/copet_modes.h"
+#include "core/music_detector.h"
 #include "drivers/copet_ble.h"
 #include "drivers/copet_audio.h"
 #include "drivers/mpu6050.h"
@@ -66,6 +67,7 @@ enum {
     LCD_TRANSFER_ROWS = 16,
     DESK_FRAME_INTERVAL_US = 125000,
     MENU_TIMEOUT_US = 10000000,
+    MOTION_IMPACT_LOCK_MS = 1900,
     BOOT_STAGE_HOLD_MS = 80,
     BOOT_FINAL_HOLD_MS = 250,
 };
@@ -624,6 +626,10 @@ void app_main(void)
     uint8_t displayed_encoder_ab = UINT8_MAX;
     copet_mode_t mode = COPET_MODE_DESK;
     bool force_redraw = true;
+    bool pet_active = false;
+    int64_t pet_start_ms = 0;
+    music_detector_t music;
+    music_detector_init(&music);
     desk_mode_t desk;
     menu_mode_t menu;
     focus_mode_t focus;
@@ -635,6 +641,7 @@ void app_main(void)
     int64_t menu_last_activity_us = 0;
     int64_t next_mpu6050_read_us = 0;
     desk_motion_event_t displayed_motion_event = DESK_MOTION_NONE;
+    uint32_t motion_impact_until_ms = 0;
     int displayed_expression = -1;
     int displayed_vibe = -1;
     int displayed_behavior = -1;
@@ -810,11 +817,20 @@ void app_main(void)
                             COPET_BEHAVIOR_EVENT_MOTION_FALLING,
                             0, (uint32_t)now_ms);
                     } else if (motion_event == DESK_MOTION_SHAKEN) {
+                        /* A hit -> angry; keep dizzy off for a moment so the
+                         * angry reaction is not cut short by the follow-up
+                         * tilt of being handled. */
                         post_behavior(
                             &behavior,
                             COPET_BEHAVIOR_EVENT_MOTION_SHAKEN_STRONG,
                             0, (uint32_t)now_ms);
-                    } else if (motion_event == DESK_MOTION_TILTED) {
+                        play_audio_event(audio_available, COPET_AUDIO_ANGRY);
+                        motion_impact_until_ms =
+                            (uint32_t)now_ms + MOTION_IMPACT_LOCK_MS;
+                    } else if ((motion_event == DESK_MOTION_TILTED ||
+                                motion_event == DESK_MOTION_MOVED) &&
+                               (uint32_t)now_ms >= motion_impact_until_ms) {
+                        /* Carried / tilted / rotated -> dizzy (disoriented). */
                         post_behavior(
                             &behavior,
                             sample.accel_x_g < 0.0f
@@ -976,8 +992,25 @@ void app_main(void)
             post_behavior(&behavior, COPET_BEHAVIOR_EVENT_FOCUS_CHANGED,
                           current_focus_state, (uint32_t)now_ms);
         }
+        /* Petting: while the pad is held on Desk, measure how long, so the
+         * behavior engine can escalate attentive -> happy -> kawaii. */
+        uint32_t touch_hold_ms = 0;
+        if (mode == COPET_MODE_DESK && touch_button_is_pressed()) {
+            if (!pet_active) {
+                pet_active = true;
+                pet_start_ms = now_ms;
+            }
+            touch_hold_ms = (uint32_t)(now_ms - pet_start_ms);
+            desk_mode_on_activity(&desk, (uint32_t)now_ms);
+        } else {
+            pet_active = false;
+        }
+        const bool music_present = music_detector_update(
+            &music, copet_audio_get_mic_level(), (uint32_t)now_ms);
         const copet_behavior_context_t behavior_context = {
             .desk_active = mode == COPET_MODE_DESK,
+            .touch_hold_ms = touch_hold_ms,
+            .music_present = music_present,
         };
         copet_behavior_update(&behavior, &behavior_context,
                               (uint32_t)now_ms);

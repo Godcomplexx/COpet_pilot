@@ -165,14 +165,16 @@ desk_motion_event_t desk_mode_set_motion_sample(
                            abs_float(gyro_z_dps);
     desk_motion_event_t event = DESK_MOTION_NONE;
     if (magnitude_squared < 0.20f) {
-        event = DESK_MOTION_FALLING;
-    } else if (magnitude_squared > 2.30f || gyro_sum > 220.0f) {
+        event = DESK_MOTION_FALLING;              /* near free-fall -> scared */
+    } else if (magnitude_squared > 4.0f) {
+        /* A sharp acceleration spike (~>2g) is a hit/knock -> angry. Rotation
+         * (high gyro) alone is carrying/handling, not a hit. */
         event = DESK_MOTION_SHAKEN;
     } else if (abs_float(accel_z_g) < 0.55f) {
-        event = DESK_MOTION_TILTED;
+        event = DESK_MOTION_TILTED;               /* tilted off flat -> dizzy */
     } else if (abs_float(magnitude_squared - 1.0f) > 0.18f ||
                gyro_sum > 35.0f) {
-        event = DESK_MOTION_MOVED;
+        event = DESK_MOTION_MOVED;                /* carried/rotated -> dizzy */
     }
 
     if (event != DESK_MOTION_NONE && event != desk->view.motion_event) {

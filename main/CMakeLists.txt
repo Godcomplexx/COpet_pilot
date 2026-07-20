@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.c"
         "core/copet_behavior.c"
+        "core/music_detector.c"
         "drivers/copet_audio.c"
         "drivers/copet_ble.c"
         "drivers/mpu6050.c"
@@ -27,6 +28,7 @@ idf_component_register(
         "assets/sounds/menu_move.pcm"
         "assets/sounds/focus_start.pcm"
         "assets/sounds/focus_complete.pcm"
+        "assets/sounds/angry_grunt.pcm"
     REQUIRES
         bt
         esp_driver_gpio

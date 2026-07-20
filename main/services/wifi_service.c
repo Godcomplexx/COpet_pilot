@@ -63,11 +63,14 @@ static void apply_credential(uint8_t index)
 {
     const wifi_credential_t *credential = &s_networks.items[index];
     wifi_config_t station_configuration = {0};
-    snprintf((char *)station_configuration.sta.ssid,
-             sizeof(station_configuration.sta.ssid), "%s", credential->ssid);
-    snprintf((char *)station_configuration.sta.password,
-             sizeof(station_configuration.sta.password), "%s",
-             credential->password);
+    /* esp_wifi ssid/password are fixed byte fields that need no terminator;
+     * copy the bytes (the {0} init zero-pads the remainder). */
+    memcpy(station_configuration.sta.ssid, credential->ssid,
+           strnlen(credential->ssid,
+                   sizeof(station_configuration.sta.ssid)));
+    memcpy(station_configuration.sta.password, credential->password,
+           strnlen(credential->password,
+                   sizeof(station_configuration.sta.password)));
     station_configuration.sta.threshold.authmode =
         credential->password[0] == '\0'
             ? WIFI_AUTH_OPEN
