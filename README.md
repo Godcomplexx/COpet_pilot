@@ -170,7 +170,7 @@ GPS/GNSS and an outdoor mode are deferred to a later hardware revision. See the
 
 ```text
 main/
-├── app_main.c     Hardware bring-up and the main event loop
+├── app_main.c     Boot sequence and the main event loop (thin integration)
 ├── core/          Shared state IDs, the Behavior Engine, the music detector
 ├── modes/         Host-testable Desk, Menu, Focus, Settings, Animation logic
 ├── ui/            Shared drawing primitives and per-screen renderers
