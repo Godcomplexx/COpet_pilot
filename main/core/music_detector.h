@@ -5,80 +5,65 @@
 #include <stdint.h>
 
 /*
- * Turns a stream of microphone features into a stable "music is playing"
- * signal for the listening emotion.
+ * Turns the microphone loudness stream into a "music is playing" signal for the
+ * listening emotion.
  *
- * Loudness alone cannot tell music from a fan, speech, or a knock, so this
- * detector scores *melodicity* from two cheap, raw-sample features fed each
- * frame:
+ * Loudness alone is the wrong cue: a talkative room is loud but is not music.
+ * What sets music apart is a *steady beat* -- the loudness envelope rises and
+ * falls periodically at the tempo. So this detector looks for rhythm, not
+ * volume:
  *
- *   - level (0..255): smoothed loudness of the window (the loudness envelope).
- *   - zcr   (0..255): zero-crossing rate of the window, a rough pitch proxy.
+ *   1. Bin the raw loudness into fixed-time frames (peak-hold per frame) to get
+ *      a loudness envelope, kept in a rolling window a few seconds long.
+ *   2. Take the onset envelope = positive frame-to-frame rise (the "hits").
+ *   3. Autocorrelate the onset envelope over the musical tempo range and see how
+ *      far the best periodic peak stands out above the average (peakiness). A
+ *      real beat gives one tall peak at the beat period (and its multiples);
+ *      speech / room noise autocorrelates flat.
+ *   4. Require enough onset energy too, so a near-silent window cannot produce a
+ *      spurious peak.
  *
- * Two independent tests must agree before we call it music:
- *
- *   1. Tonality. Musical/tonal content keeps the ZCR in a stable mid band:
- *      not near-zero (silence/rumble) and not pinned high (broadband hiss),
- *      and -- crucially -- steady frame to frame. Noise and clatter push the
- *      ZCR high and make it jump around; a pure steady tone sits low and flat.
- *      We require the ZCR to sit in the musical band AND vary little (low
- *      running deviation).
- *
- *   2. Rhythm. Music modulates its loudness periodically (a beat). We keep a
- *      short ring of the loudness envelope and look for periodicity via
- *      autocorrelation at lags matching ~60..180 BPM. A clear autocorrelation
- *      peak means a beat is present; steady noise and speech do not produce
- *      one.
- *
- * A frame is "musical" when tonality holds AND (rhythm is present OR tonality
- * is strong on its own -- e.g. a sustained melodic line without a hard beat).
- * Hysteresis + a sustain/quiet debounce then stop the listening flag from
- * chattering. Pure logic, verified by host tests.
+ * Hysteresis + a multi-second sustain/quiet debounce keep the flag steady. The
+ * `zcr` input is kept for compatibility/diagnostics only. Pure logic,
+ * host-tested. The thresholds below are the tuning knobs.
  */
 
 enum {
-    MUSIC_MIN_LEVEL = 10,      /* ignore near-silence regardless of features */
+    MUSIC_FRAME_MS = 30,        /* envelope frame length (~33 fps) */
+    MUSIC_ENV_LEN = 100,        /* rolling window = 100 frames = 3.0 s */
 
-    /* Tonality: ZCR must sit inside this band to look pitched/musical. */
-    MUSIC_ZCR_BAND_LOW = 12,   /* below -> rumble/hum/DC, not musical */
-    MUSIC_ZCR_BAND_HIGH = 170, /* above -> broadband hiss/noise, not musical */
-    MUSIC_ZCR_STEADY_MAX = 40, /* max smoothed |zcr change| to count as steady */
-    MUSIC_ZCR_STRONG_MAX = 18, /* very steady tone qualifies without a beat */
+    /* Tempo search range in frames. 30 ms/frame:
+     *   lag 11 -> 330 ms  -> ~182 BPM
+     *   lag 40 -> 1200 ms -> ~50 BPM  */
+    MUSIC_LAG_MIN = 11,
+    MUSIC_LAG_MAX = 40,
 
-    /* Rhythm: the envelope ring is sampled on a fixed cadence (see
-     * MUSIC_ENV_STEP_MS) so the beat-lag math is independent of how often
-     * the caller feeds frames. At 50 ms/slot, lags 6..20 cover one beat every
-     * 0.30..1.0 s -> ~60..200 BPM. RING must exceed BEAT_LAG_MAX. */
-    MUSIC_ENV_STEP_MS = 50,
-    MUSIC_ENV_RING = 32,
-    MUSIC_BEAT_LAG_MIN = 6,
-    MUSIC_BEAT_LAG_MAX = 20,
-    MUSIC_BEAT_STRENGTH_ON = 45, /* normalized autocorr peak (0..100) for beat */
+    /* Peakiness = normalized autocorrelation coefficient r(lag)/r(0), x100
+     * (0..100). A steady beat lines up most onset energy at the beat lag (high);
+     * random bursts / speech align only a fraction of it (low). */
+    MUSIC_BEAT_PEAKINESS = 45,  /* start listening above this */
+    MUSIC_BEAT_OFF = 33,        /* stop below this (hysteresis) */
 
-    /* Debounce windows for the listening flag. */
-    MUSIC_SUSTAIN_MS = 1200,   /* musical this long -> listening */
-    MUSIC_QUIET_MS = 1500,     /* non-musical this long -> stop */
+    /* Minimum summed onset energy over the window; rejects a quiet room where
+     * the envelope barely moves (autocorr of noise could look "peaky"). */
+    MUSIC_ONSET_FLOOR = 350,
+
+    MUSIC_SUSTAIN_MS = 2000,    /* beat present this long -> listening */
+    MUSIC_QUIET_MS = 2000,      /* beat absent this long -> stop */
 };
 
 typedef struct {
-    /* Loudness / level tracking. */
-    uint16_t level;            /* fast EMA of the raw loudness */
+    uint8_t env[MUSIC_ENV_LEN]; /* loudness-envelope ring, newest at the end */
+    uint16_t filled;            /* frames pushed so far (caps at ENV_LEN) */
 
-    /* Tonality tracking (ZCR). */
-    uint16_t zcr;              /* EMA of the raw zero-crossing rate */
-    uint16_t zcr_prev;         /* previous smoothed ZCR, for the deviation */
-    uint16_t zcr_dev;          /* EMA of |zcr - zcr_prev| (steadiness) */
+    uint32_t frame_start_ms;    /* start time of the frame being accumulated */
+    uint8_t frame_peak;         /* peak loudness within the current frame */
+    bool have_frame;
 
-    /* Rhythm tracking: ring buffer of the loudness envelope, sampled on a
-     * fixed MUSIC_ENV_STEP_MS cadence. */
-    uint8_t env[MUSIC_ENV_RING];
-    uint8_t env_head;          /* next write position */
-    uint8_t env_count;         /* valid samples in the ring (<= MUSIC_ENV_RING) */
-    uint32_t env_last_ms;      /* timestamp of the last envelope push */
-    bool env_started;          /* env_last_ms has been initialized */
+    uint16_t peakiness;         /* last computed peak/mean x100 (diagnostic) */
+    uint8_t bpm;                /* last detected tempo (diagnostic) */
 
-    /* Debounced output. */
-    uint32_t timing_start_ms;  /* when the pending on/off transition began */
+    uint32_t timing_start_ms;
     bool timing;
     bool listening;
 } music_detector_t;
@@ -86,17 +71,13 @@ typedef struct {
 void music_detector_init(music_detector_t *detector);
 
 /*
- * Feed one frame: loudness level (0..255) and zero-crossing rate (0..255),
- * both from copet_audio, with a monotonic timestamp. Returns the current
- * debounced listening state.
+ * Feed one frame: loudness level (0..255) and zero-crossing rate (0..255,
+ * diagnostics only), with a monotonic timestamp. Returns the debounced state.
  */
 bool music_detector_update(music_detector_t *detector, uint8_t level,
                            uint8_t zcr, uint32_t now_ms);
 
-/*
- * Instantaneous melodicity score (0..100) of the most recent frame, before
- * debouncing. Exposed for tuning/diagnostics and host tests.
- */
+/* Diagnostic score 0..100 derived from beat peakiness (0 = no rhythm). */
 uint8_t music_detector_score(const music_detector_t *detector);
 
 #endif

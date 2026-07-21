@@ -1016,9 +1016,10 @@ void app_main(void)
         if ((uint32_t)(now_ms - last_music_debug_ms) >= 1000U) {
             last_music_debug_ms = (uint32_t)now_ms;
             ESP_LOGI(TAG,
-                     "music: level=%u zcr=%u score=%u listening=%d",
-                     (unsigned)mic_level, (unsigned)mic_zcr,
+                     "music: level=%u beat=%u bpm=%u listening=%d",
+                     (unsigned)mic_level,
                      (unsigned)music_detector_score(&music),
+                     (unsigned)music.bpm,
                      (int)music_present);
         }
 #endif
