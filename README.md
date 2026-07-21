@@ -4,9 +4,8 @@
 sensing, a focus timer, local behaviors, audio, and direct Wi‑Fi features — no
 phone app or cloud required.**
 
-<!-- Replace with a real photo/GIF once recorded (see docs/media/README.md). -->
 <p align="center">
-  <img src="docs/media/copet-hero.gif" width="760" alt="CoPet Pilot prototype">
+  <img src="docs/media/copet-hero.jpg" width="760" alt="CoPet Pilot prototype">
 </p>
 
 ![Status](https://img.shields.io/badge/status-working%20prototype-brightgreen)
