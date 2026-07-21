@@ -5,36 +5,64 @@
 #include <stdint.h>
 
 /*
- * Turns the microphone loudness stream into a "sound worth listening to" signal
- * for the listening emotion.
+ * Turns the microphone loudness stream into a "music is playing" signal for the
+ * listening emotion.
  *
- * Reliably telling music from speech needs spectral analysis that this mic/bus
- * cannot give cleanly, so this is deliberately a *loud-and-lively* detector: it
- * fires on loud, changing sound (music, or loud activity nearby) and ignores a
- * quiet room, quiet talk, and steady loud noise. Two conditions must both hold,
- * sustained:
+ * Loudness alone is the wrong cue: a talkative room is loud but is not music.
+ * What sets music apart is a *steady beat* -- the loudness envelope rises and
+ * falls periodically at the tempo. So this detector looks for rhythm, not
+ * volume:
  *
- *   - LOUD:  the smoothed loudness is well above a quiet room.
- *   - LIVELY: the loudness keeps moving frame to frame (so a steady tone or a
- *             fan/hum -- loud but constant -- is rejected).
+ *   1. Bin the raw loudness into fixed-time frames (peak-hold per frame) to get
+ *      a loudness envelope, kept in a rolling window a few seconds long.
+ *   2. Take the onset envelope = positive frame-to-frame rise (the "hits").
+ *   3. Autocorrelate the onset envelope over the musical tempo range and see how
+ *      far the best periodic peak stands out above the average (peakiness). A
+ *      real beat gives one tall peak at the beat period (and its multiples);
+ *      speech / room noise autocorrelates flat.
+ *   4. Require enough onset energy too, so a near-silent window cannot produce a
+ *      spurious peak.
  *
- * Hysteresis + debounce keep the flag stable. The `zcr` input is kept for
- * compatibility/diagnostics only. Pure logic, host-tested. Thresholds are the
- * obvious tuning knobs for a given room and mic gain.
+ * Hysteresis + a multi-second sustain/quiet debounce keep the flag steady. The
+ * `zcr` input is kept for compatibility/diagnostics only. Pure logic,
+ * host-tested. The thresholds below are the tuning knobs.
  */
 
 enum {
-    MUSIC_LOUD_LEVEL = 50,     /* smoothed level to count as "loud" (start) */
-    MUSIC_LOUD_OFF = 30,       /* drop below this to stop (hysteresis) */
-    MUSIC_MOVE_MIN = 5,        /* min loudness movement to count as "lively" */
-    MUSIC_SUSTAIN_MS = 1500,   /* loud+lively this long -> listening */
-    MUSIC_QUIET_MS = 1500,     /* not loud+lively this long -> stop */
+    MUSIC_FRAME_MS = 30,        /* envelope frame length (~33 fps) */
+    MUSIC_ENV_LEN = 100,        /* rolling window = 100 frames = 3.0 s */
+
+    /* Tempo search range in frames. 30 ms/frame:
+     *   lag 11 -> 330 ms  -> ~182 BPM
+     *   lag 40 -> 1200 ms -> ~50 BPM  */
+    MUSIC_LAG_MIN = 11,
+    MUSIC_LAG_MAX = 40,
+
+    /* Peakiness = normalized autocorrelation coefficient r(lag)/r(0), x100
+     * (0..100). A steady beat lines up most onset energy at the beat lag (high);
+     * random bursts / speech align only a fraction of it (low). */
+    MUSIC_BEAT_PEAKINESS = 45,  /* start listening above this */
+    MUSIC_BEAT_OFF = 33,        /* stop below this (hysteresis) */
+
+    /* Minimum summed onset energy over the window; rejects a quiet room where
+     * the envelope barely moves (autocorr of noise could look "peaky"). */
+    MUSIC_ONSET_FLOOR = 350,
+
+    MUSIC_SUSTAIN_MS = 2000,    /* beat present this long -> listening */
+    MUSIC_QUIET_MS = 2000,      /* beat absent this long -> stop */
 };
 
 typedef struct {
-    uint16_t level;            /* fast EMA of the raw loudness */
-    uint16_t previous;         /* previous raw loudness sample */
-    uint16_t activity;         /* smoothed |sample - previous| (liveliness) */
+    uint8_t env[MUSIC_ENV_LEN]; /* loudness-envelope ring, newest at the end */
+    uint16_t filled;            /* frames pushed so far (caps at ENV_LEN) */
+
+    uint32_t frame_start_ms;    /* start time of the frame being accumulated */
+    uint8_t frame_peak;         /* peak loudness within the current frame */
+    bool have_frame;
+
+    uint16_t peakiness;         /* last computed peak/mean x100 (diagnostic) */
+    uint8_t bpm;                /* last detected tempo (diagnostic) */
+
     uint32_t timing_start_ms;
     bool timing;
     bool listening;
@@ -49,7 +77,7 @@ void music_detector_init(music_detector_t *detector);
 bool music_detector_update(music_detector_t *detector, uint8_t level,
                            uint8_t zcr, uint32_t now_ms);
 
-/* Diagnostic score 0..100: the smoothed loudness (0 unless also lively). */
+/* Diagnostic score 0..100 derived from beat peakiness (0 = no rhythm). */
 uint8_t music_detector_score(const music_detector_t *detector);
 
 #endif

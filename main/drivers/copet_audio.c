@@ -149,7 +149,18 @@ static void audio_task(void *argument)
     int32_t stereo_samples[AUDIO_BUFFER_FRAMES * 2];
 
     while (true) {
-        xQueueReceive(s_event_queue, &event, portMAX_DELAY);
+        /* When the mic keeps TX enabled for the shared full-duplex clock, the
+         * TX DMA must never run dry or the amp clicks/knocks. So while idle we
+         * poll the queue (no block) and keep feeding silence; write_silence()
+         * blocks on the DMA and paces this loop at one buffer (~8 ms). Without
+         * the mic, TX is enabled per-clip, so we can just block on the queue. */
+        const TickType_t wait = s_tx_always_on ? 0 : portMAX_DELAY;
+        if (xQueueReceive(s_event_queue, &event, wait) != pdTRUE) {
+            if (s_tx_always_on) {
+                write_silence();
+            }
+            continue;
+        }
         if (!s_enabled) {
             continue;
         }
