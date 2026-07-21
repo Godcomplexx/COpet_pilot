@@ -27,9 +27,13 @@ enum {
      * Tune so normal listening volume sits near mid-scale and the envelope can
      * still swing for the beat detector. */
     AUDIO_MIC_LEVEL_DIVISOR = 40,
-    /* One-pole DC-blocking pole R in Q15 (~0.996). Closer to 32768 = lower
-     * cutoff (removes only slow drift); lower = more aggressive high-pass. */
-    AUDIO_DC_R_Q15 = 32637,
+    /* DC/drift removal: subtract a slow EMA of the signal instead of a
+     * differentiator. y = x - dc; dc += (x - dc) >> AUDIO_DC_SHIFT. Larger
+     * shift = slower estimate = lower cutoff. 7 ≈ 128-sample TC ≈ 20 Hz, so it
+     * strips the mic's offset/drift while passing the audio band at full gain
+     * (the old x-x_prev high-pass attenuated mid frequencies ~10x, which made
+     * loud music read as a low amp with no zero-crossings). */
+    AUDIO_DC_SHIFT = 7,
     /* Amplitude below which a sample counts as "near zero" for ZCR. After the
      * high-pass the quiet-room signal centers near zero, so a small band
      * rejects residual noise while letting real audio cross. */
@@ -78,9 +82,8 @@ static volatile uint8_t s_mic_zcr;
  * clock keeps running for the mic; audio_task must then not enable/disable it
  * per clip. */
 static bool s_tx_always_on;
-/* Persistent state of the mic DC-blocking high-pass filter (see mic_task). */
-static int32_t s_dc_x_prev;
-static int32_t s_dc_y_prev;
+/* Persistent slow DC/drift estimate for the mic high-pass (see mic_task). */
+static int32_t s_dc_est;
 
 static bool get_clip(copet_audio_event_t event, audio_clip_t *clip)
 {
@@ -248,29 +251,35 @@ static void mic_task(void *argument)
             continue;
         }
         const size_t count = bytes_read / sizeof(samples[0]);
+
+        /* The INMP441 drives only one I2S slot; the other is silent. Which slot
+         * carries the audio depends on the module's L/R strap wiring, so do not
+         * assume "left". Measure both slots this window and use the louder one.
+         * (Reading the wrong slot was why loud music barely moved the level.) */
+        uint64_t energy_left = 0;
+        uint64_t energy_right = 0;
+        for (size_t i = 0; i + 1 < count; i += 2) {
+            const int32_t l = samples[i] >> AUDIO_MIC_SHIFT;
+            const int32_t r = samples[i + 1] >> AUDIO_MIC_SHIFT;
+            energy_left += (uint32_t)(l < 0 ? -l : l);
+            energy_right += (uint32_t)(r < 0 ? -r : r);
+        }
+        const bool use_left = energy_left >= energy_right;
+        const size_t start = use_left ? 0 : 1;
+
         uint64_t accumulator = 0;
         uint32_t crossings = 0;
-        /* The INMP441 (L/R tied low) drives ONLY the left slot; the right slot
-         * is always zero. Process even indices (left slot) only.
-         *
-         * A one-pole DC-blocking high-pass filter runs per sample:
-         *     y[n] = x[n] - x[n-1] + R*y[n-1]
-         * Subtracting a single per-window mean (the old approach) left the
-         * mic's low-frequency drift inside each 16 ms window, so the signal
-         * wandered off to one side and never crossed zero -- ZCR read ~0 and
-         * the detector degenerated into a loudness (noise) trigger. This filter
-         * removes only the drift/DC and keeps the audio-band oscillation, so
-         * real crossings appear and ZCR measures tonality again. R is Q15. */
+        /* A one-pole DC-blocking high-pass filter runs per sample on the active
+         * slot: y[n] = x[n] - x[n-1] + R*y[n-1] (R in Q15). It removes the
+         * mic's slow drift/DC so the audio-band oscillation crosses zero and
+         * ZCR measures tonality instead of degenerating into a loudness gate. */
         uint32_t used = 0;
         int previous_sign = 0;
-        for (size_t i = 0; i < count; i += 2) {
+        for (size_t i = start; i < count; i += 2) {
             const int32_t x = samples[i] >> AUDIO_MIC_SHIFT;
-            /* y = x - x_prev + R*y_prev, R ~= 0.995 in Q15 (32637/32768). */
-            const int32_t y =
-                x - s_dc_x_prev +
-                (int32_t)(((int64_t)AUDIO_DC_R_Q15 * s_dc_y_prev) >> 15);
-            s_dc_x_prev = x;
-            s_dc_y_prev = y;
+            /* AC audio = sample minus the slow DC/drift estimate. */
+            const int32_t y = x - s_dc_est;
+            s_dc_est += (x - s_dc_est) >> AUDIO_DC_SHIFT;
 
             accumulator += (uint32_t)(y < 0 ? -y : y);
             ++used;
@@ -286,7 +295,14 @@ static void mic_task(void *argument)
             if (sign != 0) { previous_sign = sign; }
         }
         const uint32_t mean = used > 0 ? (uint32_t)(accumulator / used) : 0;
-        uint32_t level = mean / AUDIO_MIC_LEVEL_DIVISOR;
+        const uint32_t raw_left = used > 0 ? (uint32_t)(energy_left / used) : 0;
+        const uint32_t raw_right = used > 0 ? (uint32_t)(energy_right / used) : 0;
+        /* Loudness comes from the RAW active-slot envelope, which tracks music
+         * strongly (~30x quiet->loud). The high-pass output (`mean`) is kept
+         * only for the ZCR/diagnostics; on this mic the audio sits mostly below
+         * the high-pass corner, so it made a poor loudness signal. */
+        const uint32_t active_raw = use_left ? raw_left : raw_right;
+        uint32_t level = active_raw / AUDIO_MIC_LEVEL_DIVISOR;
         if (level > 255U) { level = 255U; }
         s_mic_level = (uint8_t)level;
 
@@ -302,9 +318,10 @@ static void mic_task(void *argument)
 #if CONFIG_COPET_MUSIC_DEBUG
         if (xTaskGetTickCount() - last_diag >= pdMS_TO_TICKS(1000)) {
             last_diag = xTaskGetTickCount();
-            ESP_LOGI(TAG, "mic: amp=%u cross=%u level=%u zcr=%u",
-                     (unsigned)mean, (unsigned)crossings,
-                     (unsigned)level, (unsigned)zcr);
+            ESP_LOGI(TAG, "mic: L=%u R=%u slot=%c amp=%u cross=%u level=%u zcr=%u",
+                     (unsigned)raw_left, (unsigned)raw_right,
+                     use_left ? 'L' : 'R', (unsigned)mean,
+                     (unsigned)crossings, (unsigned)level, (unsigned)zcr);
         }
 #endif
     }
