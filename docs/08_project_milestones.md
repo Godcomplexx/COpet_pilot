@@ -44,13 +44,15 @@ Done when:
 - display/input/sensors/modes are separated from app_main;
 - state transitions have host tests.
 
-Status (in progress): boot opens Desk and the encoder opens Menu. Mode logic is
-in `main/modes/` (`desk`, `menu`, `focus`, `animation`) and per-screen rendering
-in `main/ui/` on a shared `ui_canvas`; `app_main.c` is now the hardware + main
-loop integration layer. State transitions for focus/menu/animation are covered
-by host tests in `test/host/` (run `test/host/run_tests.ps1`). Remaining:
-moving the ST7789/SPI driver glue out of `app_main.c`, and the `assistant`
-module lands with M7.
+Status (done): boot opens Desk and the encoder opens Menu. Mode logic is in
+`main/modes/` (`desk`, `menu`, `focus`, `animation`) and per-screen rendering in
+`main/ui/` on a shared `ui_canvas`. The hardware now lives behind driver modules
+in `main/drivers/` — `copet_display` (ST7789/SPI + framebuffer), `copet_i2c`
+(shared bus) + `copet_sht31`, `copet_encoder`, plus `mpu6050`, `touch_button`
+and `copet_audio`. `app_main.c` is a thin layer that only runs the boot sequence
+and the main loop, wiring inputs to modes and mode state to renderers. State
+transitions for focus/menu/animation are covered by host tests in `test/host/`
+(run `test/host/run_tests.ps1`). The `assistant` module lands with M7.
 
 ## M6 — Direct Wi-Fi
 

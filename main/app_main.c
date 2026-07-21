@@ -3,25 +3,21 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "driver/gpio.h"
-#include "driver/i2c_master.h"
-#include "driver/spi_master.h"
 #include "esp_check.h"
-#include "esp_heap_caps.h"
-#include "esp_lcd_panel_io.h"
-#include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_vendor.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "core/copet_behavior.h"
 #include "core/copet_modes.h"
 #include "core/music_detector.h"
-#include "drivers/copet_ble.h"
 #include "drivers/copet_audio.h"
+#include "drivers/copet_ble.h"
+#include "drivers/copet_display.h"
+#include "drivers/copet_encoder.h"
+#include "drivers/copet_i2c.h"
+#include "drivers/copet_sht31.h"
 #include "drivers/mpu6050.h"
 #include "drivers/touch_button.h"
 #include "modes/desk_mode.h"
@@ -41,30 +37,16 @@
 /*
  * CoPet integration layer for the ESP32-WROOM-32 DevKit shown in the photos.
  *
- * app_main owns only the hardware bring-up (display, I2C/SHT31, encoder) and
- * the main loop that wires inputs to mode modules and mode state to renderers.
- * The mode logic lives in modes/, the drawing in ui/. See docs 01 and 03.
- *
- * ST7789: SCK=18, MOSI=5, DC=16, RST=17, CS is not present.
- * SHT3x:  SDA=21, SCL=22.
- * Encoder: A=32, B=33, COM=GND.
+ * app_main owns only the boot sequence and the main loop that wires inputs to
+ * mode modules and mode state to renderers. The hardware lives behind driver
+ * modules (drivers/copet_display, copet_i2c, copet_sht31, copet_encoder,
+ * mpu6050, touch_button, copet_audio); mode logic in modes/; drawing in ui/.
+ * See docs 01 and 03.
  */
 
 static const char *TAG = "copet_test";
 
 enum {
-    LCD_WIDTH = 240,
-    LCD_HEIGHT = 240,
-    LCD_PIN_SCLK = 18,
-    LCD_PIN_MOSI = 5,
-    LCD_PIN_DC = 16,
-    LCD_PIN_RST = 17,
-    I2C_PIN_SDA = 21,
-    I2C_PIN_SCL = 22,
-    ENCODER_PIN_A = 32,
-    ENCODER_PIN_B = 33,
-    ENCODER_DEBOUNCE_US = 12000,
-    LCD_TRANSFER_ROWS = 16,
     DESK_FRAME_INTERVAL_US = 125000,
     MENU_TIMEOUT_US = 10000000,
     MOTION_IMPACT_LOCK_MS = 1900,
@@ -72,402 +54,14 @@ enum {
     BOOT_FINAL_HOLD_MS = 250,
 };
 
-#define LCD_HOST SPI2_HOST
-#define LCD_PIXEL_CLOCK_HZ (10 * 1000 * 1000)
-#define LCD_X_GAP 0
-#define LCD_Y_GAP 0
-
-#define SHT31_ADDR_PRIMARY 0x44
-#define SHT31_ADDR_SECONDARY 0x45
-
-static esp_lcd_panel_handle_t s_panel;
-static esp_lcd_panel_io_handle_t s_panel_io;
-static SemaphoreHandle_t s_lcd_done;
-typedef uint8_t screen_color_t;
-
-static screen_color_t *s_framebuffer;
-static uint16_t *s_lcd_transfer_buffer;
-static i2c_master_bus_handle_t s_i2c_bus;
-static i2c_master_dev_handle_t s_sht31_primary;
-static i2c_master_dev_handle_t s_sht31_secondary;
-
-static volatile int32_t s_encoder_position;
-static volatile uint8_t s_encoder_ab;
-
-static uint16_t rgb332_to_panel_rgb565(screen_color_t color)
-{
-    const uint16_t red_3 = (color >> 5) & 0x07U;
-    const uint16_t green_3 = (color >> 2) & 0x07U;
-    const uint16_t blue_2 = color & 0x03U;
-    const uint16_t red_5 = (red_3 << 2) | (red_3 >> 1);
-    const uint16_t green_6 = (green_3 << 3) | green_3;
-    const uint16_t blue_5 =
-        (blue_2 << 3) | (blue_2 << 1) | (blue_2 >> 1);
-    const uint16_t color_565 =
-        (red_5 << 11) | (green_6 << 5) | blue_5;
-
-    /* The SPI panel consumes RGB565 most-significant byte first. */
-    return (uint16_t)((color_565 << 8) | (color_565 >> 8));
-}
-
-static bool lcd_transfer_done(esp_lcd_panel_io_handle_t panel_io,
-                              esp_lcd_panel_io_event_data_t *event_data,
-                              void *user_context)
-{
-    (void)panel_io;
-    (void)event_data;
-    (void)user_context;
-
-    BaseType_t higher_priority_task_woken = pdFALSE;
-    xSemaphoreGiveFromISR(s_lcd_done, &higher_priority_task_woken);
-    return higher_priority_task_woken == pdTRUE;
-}
-
-static esp_err_t lcd_apply_gmt130_init(void)
-{
-    static const uint8_t madctl[] = {0x00};
-    static const uint8_t pixel_format[] = {0x55};
-    static const uint8_t porch[] = {0x0C, 0x0C, 0x00, 0x33, 0x33};
-    static const uint8_t gate_control[] = {0x35};
-    static const uint8_t vcom[] = {0x19};
-    static const uint8_t lcm_control[] = {0x2C};
-    static const uint8_t vdv_vrh_enable[] = {0x01};
-    static const uint8_t vrh[] = {0x12};
-    static const uint8_t vdv[] = {0x20};
-    static const uint8_t frame_rate[] = {0x0F};
-    static const uint8_t power_control[] = {0xA4, 0xA1};
-    static const uint8_t positive_gamma[] = {
-        0xD0, 0x04, 0x0D, 0x11, 0x13, 0x2B, 0x3F,
-        0x54, 0x4C, 0x18, 0x0D, 0x0B, 0x1F, 0x23,
-    };
-    static const uint8_t negative_gamma[] = {
-        0xD0, 0x04, 0x0C, 0x11, 0x13, 0x2C, 0x3F,
-        0x44, 0x51, 0x2F, 0x1F, 0x1F, 0x20, 0x23,
-    };
-
-#define GMT130_COMMAND(command, data)                                      \
-    ESP_RETURN_ON_ERROR(                                                   \
-        esp_lcd_panel_io_tx_param(s_panel_io, command, data, sizeof(data)), \
-        TAG, "GMT130 command 0x%02X failed", command)
-
-    GMT130_COMMAND(0x36, madctl);
-    GMT130_COMMAND(0x3A, pixel_format);
-    GMT130_COMMAND(0xB2, porch);
-    GMT130_COMMAND(0xB7, gate_control);
-    GMT130_COMMAND(0xBB, vcom);
-    GMT130_COMMAND(0xC0, lcm_control);
-    GMT130_COMMAND(0xC2, vdv_vrh_enable);
-    GMT130_COMMAND(0xC3, vrh);
-    GMT130_COMMAND(0xC4, vdv);
-    GMT130_COMMAND(0xC6, frame_rate);
-    GMT130_COMMAND(0xD0, power_control);
-    GMT130_COMMAND(0xE0, positive_gamma);
-    GMT130_COMMAND(0xE1, negative_gamma);
-#undef GMT130_COMMAND
-
-    ESP_RETURN_ON_ERROR(
-        esp_lcd_panel_io_tx_param(s_panel_io, 0x21, NULL, 0),
-        TAG, "GMT130 inversion command failed");
-    ESP_RETURN_ON_ERROR(
-        esp_lcd_panel_io_tx_param(s_panel_io, 0x11, NULL, 0),
-        TAG, "GMT130 sleep-out command failed");
-    vTaskDelay(pdMS_TO_TICKS(120));
-    ESP_RETURN_ON_ERROR(
-        esp_lcd_panel_io_tx_param(s_panel_io, 0x29, NULL, 0),
-        TAG, "GMT130 display-on command failed");
-    vTaskDelay(pdMS_TO_TICKS(20));
-
-    return ESP_OK;
-}
-
-static esp_err_t lcd_init(void)
-{
-    spi_bus_config_t bus_config = {
-        .sclk_io_num = LCD_PIN_SCLK,
-        .mosi_io_num = LCD_PIN_MOSI,
-        .miso_io_num = -1,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t),
-    };
-    ESP_RETURN_ON_ERROR(
-        spi_bus_initialize(LCD_HOST, &bus_config, SPI_DMA_CH_AUTO),
-        TAG, "SPI bus initialization failed");
-
-    esp_lcd_panel_io_spi_config_t io_config = {
-        .dc_gpio_num = LCD_PIN_DC,
-        .cs_gpio_num = -1,
-        .pclk_hz = LCD_PIXEL_CLOCK_HZ,
-        .lcd_cmd_bits = 8,
-        .lcd_param_bits = 8,
-        .spi_mode = 3,
-        .trans_queue_depth = 1,
-    };
-    ESP_RETURN_ON_ERROR(
-        esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST,
-                                 &io_config, &s_panel_io),
-        TAG, "LCD panel IO initialization failed");
-
-    s_lcd_done = xSemaphoreCreateBinary();
-    ESP_RETURN_ON_FALSE(s_lcd_done != NULL, ESP_ERR_NO_MEM, TAG,
-                        "LCD semaphore allocation failed");
-
-    const esp_lcd_panel_io_callbacks_t callbacks = {
-        .on_color_trans_done = lcd_transfer_done,
-    };
-    ESP_RETURN_ON_ERROR(
-        esp_lcd_panel_io_register_event_callbacks(
-            s_panel_io, &callbacks, NULL),
-        TAG, "LCD callback registration failed");
-
-    esp_lcd_panel_dev_config_t panel_config = {
-        .reset_gpio_num = LCD_PIN_RST,
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
-        .bits_per_pixel = 16,
-    };
-    ESP_RETURN_ON_ERROR(
-        esp_lcd_new_panel_st7789(s_panel_io, &panel_config, &s_panel),
-        TAG, "ST7789 initialization failed");
-
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(s_panel), TAG, "LCD reset failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s_panel), TAG, "LCD init failed");
-    ESP_RETURN_ON_ERROR(lcd_apply_gmt130_init(),
-                        TAG, "GMT130-specific initialization failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_set_gap(s_panel, LCD_X_GAP, LCD_Y_GAP),
-                        TAG, "LCD gap setup failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true),
-                        TAG, "LCD enable failed");
-
-    s_framebuffer = heap_caps_malloc(
-        LCD_WIDTH * LCD_HEIGHT * sizeof(screen_color_t),
-        MALLOC_CAP_8BIT);
-    ESP_RETURN_ON_FALSE(s_framebuffer != NULL, ESP_ERR_NO_MEM, TAG,
-                        "LCD framebuffer allocation failed");
-
-    s_lcd_transfer_buffer = heap_caps_malloc(
-        LCD_WIDTH * LCD_TRANSFER_ROWS * sizeof(uint16_t),
-        MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-    ESP_RETURN_ON_FALSE(s_lcd_transfer_buffer != NULL, ESP_ERR_NO_MEM, TAG,
-                        "LCD transfer buffer allocation failed");
-
-    ESP_LOGI(TAG, "LCD buffers: framebuffer=%u bytes, DMA stripe=%u bytes",
-             LCD_WIDTH * LCD_HEIGHT * (unsigned)sizeof(screen_color_t),
-             LCD_WIDTH * LCD_TRANSFER_ROWS *
-                 (unsigned)sizeof(uint16_t));
-    return ESP_OK;
-}
-
-static esp_err_t lcd_refresh(void)
-{
-    for (int y = 0; y < LCD_HEIGHT; y += LCD_TRANSFER_ROWS) {
-        const int rows =
-            y + LCD_TRANSFER_ROWS <= LCD_HEIGHT
-                ? LCD_TRANSFER_ROWS
-                : LCD_HEIGHT - y;
-        const int pixel_count = LCD_WIDTH * rows;
-        const int source_offset = y * LCD_WIDTH;
-
-        for (int pixel = 0; pixel < pixel_count; ++pixel) {
-            s_lcd_transfer_buffer[pixel] =
-                rgb332_to_panel_rgb565(
-                    s_framebuffer[source_offset + pixel]);
-        }
-
-        /* Remove a stale notification before starting the next stripe. */
-        (void)xSemaphoreTake(s_lcd_done, 0);
-        ESP_RETURN_ON_ERROR(
-            esp_lcd_panel_draw_bitmap(
-                s_panel, 0, y, LCD_WIDTH, y + rows,
-                s_lcd_transfer_buffer),
-            TAG, "LCD stripe transfer failed");
-        ESP_RETURN_ON_FALSE(
-            xSemaphoreTake(s_lcd_done, pdMS_TO_TICKS(1000)) == pdTRUE,
-            ESP_ERR_TIMEOUT, TAG, "LCD stripe transfer timeout");
-    }
-    return ESP_OK;
-}
-
 static void show_boot_progress(uint8_t progress_percent, const char *status,
                                uint32_t hold_ms)
 {
-    boot_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
-                   progress_percent, status);
-    ESP_ERROR_CHECK(lcd_refresh());
+    boot_ui_render(copet_display_framebuffer(), COPET_DISPLAY_WIDTH,
+                   COPET_DISPLAY_HEIGHT, progress_percent, status);
+    ESP_ERROR_CHECK(copet_display_refresh());
     if (hold_ms > 0U) {
         vTaskDelay(pdMS_TO_TICKS(hold_ms));
-    }
-}
-
-static esp_err_t i2c_init(void)
-{
-    const i2c_master_bus_config_t bus_config = {
-        .i2c_port = I2C_NUM_0,
-        .sda_io_num = I2C_PIN_SDA,
-        .scl_io_num = I2C_PIN_SCL,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_config, &s_i2c_bus),
-                        TAG, "I2C bus initialization failed");
-
-    const i2c_device_config_t primary_config = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = SHT31_ADDR_PRIMARY,
-        .scl_speed_hz = 100000,
-    };
-    ESP_RETURN_ON_ERROR(
-        i2c_master_bus_add_device(s_i2c_bus, &primary_config,
-                                  &s_sht31_primary),
-        TAG, "SHT3x primary address setup failed");
-
-    const i2c_device_config_t secondary_config = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = SHT31_ADDR_SECONDARY,
-        .scl_speed_hz = 100000,
-    };
-    return i2c_master_bus_add_device(s_i2c_bus, &secondary_config,
-                                     &s_sht31_secondary);
-}
-
-static uint8_t sht31_crc(const uint8_t *data)
-{
-    uint8_t crc = 0xFF;
-    for (int byte = 0; byte < 2; ++byte) {
-        crc ^= data[byte];
-        for (int bit = 0; bit < 8; ++bit) {
-            crc = (crc & 0x80U) ? (uint8_t)((crc << 1) ^ 0x31U)
-                                : (uint8_t)(crc << 1);
-        }
-    }
-    return crc;
-}
-
-static esp_err_t sht31_read_at(i2c_master_dev_handle_t device,
-                               uint8_t address,
-                               float *temperature,
-                               float *humidity)
-{
-    const uint8_t measure_high_repeatability[] = {0x24, 0x00};
-    uint8_t response[6];
-
-    ESP_RETURN_ON_ERROR(
-        i2c_master_transmit(device, measure_high_repeatability,
-                            sizeof(measure_high_repeatability), 100),
-        TAG, "SHT3x command failed at address 0x%02X", address);
-
-    vTaskDelay(pdMS_TO_TICKS(20));
-
-    ESP_RETURN_ON_ERROR(
-        i2c_master_receive(device, response, sizeof(response), 100),
-        TAG, "SHT3x read failed at address 0x%02X", address);
-
-    ESP_RETURN_ON_FALSE(
-        sht31_crc(&response[0]) == response[2] &&
-            sht31_crc(&response[3]) == response[5],
-        ESP_ERR_INVALID_CRC, TAG, "SHT3x CRC check failed");
-
-    const uint16_t raw_temperature =
-        ((uint16_t)response[0] << 8) | response[1];
-    const uint16_t raw_humidity =
-        ((uint16_t)response[3] << 8) | response[4];
-
-    *temperature = -45.0f + 175.0f * raw_temperature / 65535.0f;
-    *humidity = 100.0f * raw_humidity / 65535.0f;
-    return ESP_OK;
-}
-
-static esp_err_t sht31_read(float *temperature,
-                            float *humidity,
-                            uint8_t *detected_address)
-{
-    if (*detected_address != 0) {
-        return sht31_read_at(
-            *detected_address == SHT31_ADDR_PRIMARY
-                ? s_sht31_primary
-                : s_sht31_secondary,
-            *detected_address, temperature, humidity);
-    }
-
-    esp_err_t error = sht31_read_at(
-        s_sht31_primary, SHT31_ADDR_PRIMARY, temperature, humidity);
-    if (error == ESP_OK) {
-        *detected_address = SHT31_ADDR_PRIMARY;
-        return ESP_OK;
-    }
-
-    error = sht31_read_at(
-        s_sht31_secondary, SHT31_ADDR_SECONDARY, temperature, humidity);
-    if (error == ESP_OK) {
-        *detected_address = SHT31_ADDR_SECONDARY;
-    }
-    return error;
-}
-
-static void encoder_task(void *argument)
-{
-    (void)argument;
-
-    /*
-     * The tested three-contact mouse wheel has a three-state cycle:
-     * 10 -> 11 -> 01 -> 10. The reverse direction uses the opposite order.
-     * State 00 is not a detent and is ignored.
-     */
-    static const int8_t transition_table[16] = {
-        0, 0, 0, 0,
-        0, 0, 1, -1,
-        0, -1, 0, 1,
-        0, 1, -1, 0,
-    };
-
-    gpio_config_t config = {
-        .pin_bit_mask =
-            (1ULL << ENCODER_PIN_A) | (1ULL << ENCODER_PIN_B),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    ESP_ERROR_CHECK(gpio_config(&config));
-
-    uint8_t raw_state =
-        ((uint8_t)gpio_get_level(ENCODER_PIN_A) << 1) |
-        (uint8_t)gpio_get_level(ENCODER_PIN_B);
-    uint8_t stable_state = raw_state;
-    int64_t raw_changed_us = esp_timer_get_time();
-    s_encoder_ab = stable_state;
-
-    while (true) {
-        const int64_t now_us = esp_timer_get_time();
-        const uint8_t sampled_state =
-            ((uint8_t)gpio_get_level(ENCODER_PIN_A) << 1) |
-            (uint8_t)gpio_get_level(ENCODER_PIN_B);
-
-        if (sampled_state != raw_state) {
-            raw_state = sampled_state;
-            raw_changed_us = now_us;
-        }
-
-        if (raw_state != stable_state && raw_state != 0 &&
-            now_us - raw_changed_us >= ENCODER_DEBOUNCE_US) {
-            const int8_t logical_step =
-                transition_table[(stable_state << 2) | raw_state];
-            if (logical_step != 0) {
-                s_encoder_position += logical_step;
-                ESP_LOGI(TAG, "ENC STEP %s, count=%ld, AB=%u%u",
-                         logical_step > 0 ? "RIGHT" : "LEFT",
-                         (long)s_encoder_position,
-                         (raw_state >> 1) & 1U, raw_state & 1U);
-            } else {
-                ESP_LOGW(TAG, "ENC unexpected transition %u%u -> %u%u",
-                         (stable_state >> 1) & 1U, stable_state & 1U,
-                         (raw_state >> 1) & 1U, raw_state & 1U);
-            }
-            stable_state = raw_state;
-            s_encoder_ab = stable_state;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
@@ -536,28 +130,31 @@ static void render_active_mode(copet_mode_t mode, const desk_mode_t *desk,
                                copet_ble_status_t ble_status,
                                const char *ble_message)
 {
+    uint8_t *fb = copet_display_framebuffer();
+    const int width = COPET_DISPLAY_WIDTH;
+    const int height = COPET_DISPLAY_HEIGHT;
+
     switch (mode) {
     case COPET_MODE_DESK:
-        desk_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
+        desk_ui_render(fb, width, height,
                        desk_mode_get_view(desk), behavior, network_status,
                        weather, environment);
         break;
     case COPET_MODE_SETTINGS:
-        settings_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
+        settings_ui_render(fb, width, height,
                            desk_mode_get_view(desk), settings,
                            network_status, weather);
         break;
     case COPET_MODE_FOCUS:
-        focus_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT, focus);
+        focus_ui_render(fb, width, height, focus);
         break;
     case COPET_MODE_PHONE_BRIDGE:
-        diag_ui_render_phone_bridge(s_framebuffer, LCD_WIDTH, LCD_HEIGHT,
+        diag_ui_render_phone_bridge(fb, width, height,
                                     ble_status, ble_message);
         break;
     case COPET_MODE_MENU:
     default:
-        menu_ui_render(s_framebuffer, LCD_WIDTH, LCD_HEIGHT, menu,
-                       network_status);
+        menu_ui_render(fb, width, height, menu, network_status);
         break;
     }
 }
@@ -567,14 +164,15 @@ void app_main(void)
     ESP_LOGI(TAG, "CoPet Desk + menu + hardware test");
     ESP_LOGI(TAG, "Board target: ESP32-WROOM-32");
 
-    ESP_ERROR_CHECK(lcd_init());
+    ESP_ERROR_CHECK(copet_display_init());
     show_boot_progress(10, "DISPLAY READY", BOOT_STAGE_HOLD_MS);
-    ESP_ERROR_CHECK(i2c_init());
+    ESP_ERROR_CHECK(copet_i2c_init());
+    ESP_ERROR_CHECK(copet_sht31_init(copet_i2c_bus()));
     ESP_ERROR_CHECK(touch_button_init());
     show_boot_progress(35, "INPUT READY", BOOT_STAGE_HOLD_MS);
     uint8_t mpu6050_address = 0;
     const esp_err_t mpu6050_init_result =
-        mpu6050_init(s_i2c_bus, &mpu6050_address);
+        mpu6050_init(copet_i2c_bus(), &mpu6050_address);
     const bool mpu6050_available = mpu6050_init_result == ESP_OK;
     if (mpu6050_available) {
         ESP_LOGI(TAG, "MPU6050 motion reactions enabled at 0x%02X",
@@ -613,9 +211,7 @@ void app_main(void)
     }
     show_boot_progress(90, "SERVICES CHECKED", BOOT_STAGE_HOLD_MS);
 
-    BaseType_t task_created =
-        xTaskCreate(encoder_task, "encoder", 2048, NULL, 5, NULL);
-    ESP_ERROR_CHECK(task_created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(copet_encoder_start());
 
     bool sensor_ok = false;
     float temperature = 0.0f;
@@ -773,7 +369,7 @@ void app_main(void)
 
         if (now_us >= next_sensor_read_us) {
             const esp_err_t result =
-                sht31_read(&temperature, &humidity, &sht31_address);
+                copet_sht31_read(&temperature, &humidity, &sht31_address);
             sensor_ok = result == ESP_OK;
             if (sensor_ok) {
                 ESP_LOGI(TAG,
@@ -929,8 +525,8 @@ void app_main(void)
             }
         }
 
-        const int32_t encoder_position = s_encoder_position;
-        const uint8_t encoder_ab = s_encoder_ab;
+        const int32_t encoder_position = copet_encoder_position();
+        const uint8_t encoder_ab = copet_encoder_ab();
         if (encoder_position != displayed_encoder_position ||
             encoder_ab != displayed_encoder_ab) {
             const bool real_step =
@@ -1051,7 +647,7 @@ void app_main(void)
                                wifi_service_status_label(wifi_status),
                                &weather, desk_environment, ble_status,
                                ble_message);
-            ESP_ERROR_CHECK(lcd_refresh());
+            ESP_ERROR_CHECK(copet_display_refresh());
             force_redraw = false;
         }
 
