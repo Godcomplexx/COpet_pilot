@@ -95,3 +95,6 @@ build-*/
 *.exe
 *.obj
 test/*.zip
+
+# Raw camera source for README media (cropped versions are committed)
+docs/media/20260720_204356.jpg
