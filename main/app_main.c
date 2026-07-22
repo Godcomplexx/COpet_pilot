@@ -56,7 +56,7 @@ enum {
     MOTION_IMPACT_LOCK_MS = 1900,
     BOOT_STAGE_HOLD_MS = 80,
     BOOT_FINAL_HOLD_MS = 250,
-    TRIPLE_TAP_WINDOW_MS = 800, /* max gap between taps of the clock gesture */
+    TRIPLE_TAP_WINDOW_MS = 1500, /* max gap between taps of the clock gesture */
 };
 
 static void show_boot_progress(uint8_t progress_percent, const char *status,
@@ -124,6 +124,27 @@ static void announce_time(assistant_mode_t *assistant, bool audio_available)
             copet_audio_speak(2);
         }
     }
+}
+
+/* Count a tap toward the triple-tap clock gesture; returns true on the third
+ * within the window. Both short and long (held) presses count, so a lingering
+ * finger does not break the sequence. */
+static bool register_clock_tap(int *tap_count, int64_t *last_tap_ms,
+                               int64_t now_ms)
+{
+    if (now_ms - *last_tap_ms <= TRIPLE_TAP_WINDOW_MS) {
+        ++(*tap_count);
+    } else {
+        *tap_count = 1;
+    }
+    ESP_LOGI(TAG, "tap %d (gap %lld ms)", *tap_count,
+             (long long)(now_ms - *last_tap_ms));
+    *last_tap_ms = now_ms;
+    if (*tap_count >= 3) {
+        *tap_count = 0;
+        return true;
+    }
+    return false;
 }
 
 static void post_behavior(copet_behavior_t *behavior,
@@ -344,16 +365,8 @@ void app_main(void)
             /* Triple-tap on Desk is a shortcut: show + speak the time. */
             bool triple_time = false;
             if (mode == COPET_MODE_DESK) {
-                if (now_ms - last_tap_ms <= TRIPLE_TAP_WINDOW_MS) {
-                    ++tap_count;
-                } else {
-                    tap_count = 1;
-                }
-                last_tap_ms = now_ms;
-                if (tap_count >= 3) {
-                    tap_count = 0;
-                    triple_time = true;
-                }
+                triple_time =
+                    register_clock_tap(&tap_count, &last_tap_ms, now_ms);
             }
             if (triple_time) {
                 announce_time(&assistant, audio_available);
@@ -460,7 +473,14 @@ void app_main(void)
             desk_mode_on_activity(&desk, (uint32_t)now_ms);
             post_behavior(&behavior, COPET_BEHAVIOR_EVENT_USER_ACTIVITY,
                           0, (uint32_t)now_ms);
-            if (mode != COPET_MODE_DESK) {
+            if (mode == COPET_MODE_DESK) {
+                /* A held tap still counts toward the triple-tap clock gesture. */
+                if (register_clock_tap(&tap_count, &last_tap_ms, now_ms)) {
+                    announce_time(&assistant, audio_available);
+                    mode = COPET_MODE_ASSISTANT;
+                    ESP_LOGI(TAG, "Triple-tap: announce time");
+                }
+            } else {
                 if (mode == COPET_MODE_PHONE_BRIDGE && ble_available) {
                     copet_ble_stop();
                 }
