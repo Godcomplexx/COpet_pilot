@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_check.h"
 #include "esp_log.h"
@@ -541,9 +542,36 @@ void app_main(void)
                                              assistant_snapshot.mood,
                                              (uint32_t)now_ms);
                     if (audio_available) {
-                        /* Retro "robot voice" sized to the answer length. */
-                        copet_audio_speak(
-                            count_words(assistant_snapshot.text));
+                        /* Local skills speak real values from the vocabulary;
+                         * anything else gets the retro robot babble. */
+                        const assistant_preset_t *ap =
+                            assistant_mode_selected_preset(&assistant);
+                        speech_word_t words[SPEECH_MAX_WORDS];
+                        int spoken = 0;
+                        if (ap != NULL && strcmp(ap->type, "weather") == 0 &&
+                            weather.has_data) {
+                            const int temp = (int)(weather.temperature_c +
+                                (weather.temperature_c >= 0.0f ? 0.5f : -0.5f));
+                            spoken = copet_speech_weather(
+                                temp, weather.weather_code, words,
+                                SPEECH_MAX_WORDS);
+                        } else if (ap != NULL &&
+                                   strcmp(ap->type, "time") == 0) {
+                            const time_t t_now = time(NULL);
+                            struct tm local_time;
+                            localtime_r(&t_now, &local_time);
+                            if (local_time.tm_year + 1900 >= 2021) {
+                                spoken = copet_speech_time(
+                                    local_time.tm_hour, local_time.tm_min,
+                                    words, SPEECH_MAX_WORDS);
+                            }
+                        }
+                        if (spoken > 0) {
+                            copet_audio_say(words, spoken);
+                        } else {
+                            copet_audio_speak(
+                                count_words(assistant_snapshot.text));
+                        }
                     }
                 } else if (assistant_snapshot.status ==
                            ASSISTANT_SERVICE_ERROR) {

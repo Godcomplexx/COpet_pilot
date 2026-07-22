@@ -1,11 +1,15 @@
 #include "services/assistant_service.h"
 
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+
+#include "services/weather_service.h"
 
 enum {
     ASSISTANT_TASK_STACK_SIZE = 3072,
@@ -37,16 +41,54 @@ static void copy_bounded(char *dst, size_t cap, const char *src)
     dst[i] = '\0';
 }
 
-/* Stub "backend": pick a canned answer from the query type. ASCII so the
+static const char *weather_code_text(int code)
+{
+    if (code == 0) { return "CLEAR"; }
+    if (code >= 1 && code <= 3) { return "CLOUDY"; }
+    if (code == 45 || code == 48) { return "FOG"; }
+    if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
+        return "RAIN";
+    }
+    if ((code >= 71 && code <= 77) || code == 85 || code == 86) {
+        return "SNOW";
+    }
+    if (code >= 95) { return "STORM"; }
+    return "CLOUDY";
+}
+
+/* Stub "backend": for the local skills (weather/time) it answers from real
+ * on-device data so the card matches what CoPet then speaks. ASCII so the
  * uppercase font can render it. */
 static void stub_answer(const char *type, char *text, size_t text_cap,
                         char *mood, size_t mood_cap)
 {
     if (type != NULL && strcmp(type, "weather") == 0) {
-        copy_bounded(text, text_cap, "SUNNY, ABOUT 18C WITH A LIGHT WIND.");
+        weather_service_snapshot_t weather;
+        weather_service_get_snapshot(&weather);
+        if (weather.has_data) {
+            const int temp = (int)(weather.temperature_c +
+                                   (weather.temperature_c >= 0.0f ? 0.5f
+                                                                   : -0.5f));
+            char line[64];
+            snprintf(line, sizeof(line), "%d DEGREES, %s", temp,
+                     weather_code_text(weather.weather_code));
+            copy_bounded(text, text_cap, line);
+        } else {
+            copy_bounded(text, text_cap, "WEATHER NOT READY YET.");
+        }
         copy_bounded(mood, mood_cap, "helpful");
     } else if (type != NULL && strcmp(type, "time") == 0) {
-        copy_bounded(text, text_cap, "IT IS ABOUT 14:30 LOCAL TIME.");
+        const time_t now = time(NULL);
+        struct tm local;
+        localtime_r(&now, &local);
+        if (local.tm_year + 1900 >= 2021) {
+            char line[32];
+            snprintf(line, sizeof(line), "IT IS %02d:%02d", local.tm_hour,
+                     local.tm_min);
+            copy_bounded(text, text_cap, line);
+        } else {
+            copy_bounded(text, text_cap, "TIME NOT SYNCED YET.");
+        }
         copy_bounded(mood, mood_cap, "neutral");
     } else {
         copy_bounded(text, text_cap, "HI! I AM COPET, YOUR DESK PET.");
