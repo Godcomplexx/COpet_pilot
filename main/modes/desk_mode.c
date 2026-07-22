@@ -3,20 +3,46 @@
 #include <stddef.h>
 
 enum {
-    BLINK_INTERVAL_MS = 3800,
     BLINK_DURATION_MS = 280,
-    GAZE_INTERVAL_MS = 2600,
     TOUCH_REACTION_MS = 900,
     MOTION_REACTION_MS = 1600,
     BOB_PERIOD_MS = 2400,
     BORED_AFTER_MS = 30000,
     SMOKING_AFTER_MS = 90000,
     SLEEPY_AFTER_MS = 10 * 60 * 1000,
+    /* Idle life, ported from the upstream engine (engine.py): random glances on
+     * a varied cadence rather than a fixed pattern, so a resting face never
+     * loops. _IDLE_GAP=(1.5,5.0)s glances, _BLINK_GAP=(2.0,6.0)s blinks. */
+    GAZE_GAP_MIN_MS = 1500,
+    GAZE_GAP_MAX_MS = 5000,
+    BLINK_GAP_MIN_MS = 2000,
+    BLINK_GAP_MAX_MS = 6000,
+    GAZE_RECENTER_PCT = 30,   /* chance a glance returns to centre */
+    GAZE_DART_BLINK_PCT = 40, /* chance the eyes blink as they dart */
+    GAZE_X_SPAN = 16,         /* glance target x in [-16, 16] */
+    GAZE_Y_SPAN = 7,          /* glance target y in [-7, 7] */
 };
 
 static bool time_reached(uint32_t now_ms, uint32_t deadline_ms)
 {
     return (int32_t)(now_ms - deadline_ms) >= 0;
+}
+
+/* Deterministic xorshift32 so the idle life is lively yet host-testable. */
+static uint32_t desk_rand(desk_mode_t *desk)
+{
+    uint32_t value = desk->random_state;
+    value ^= value << 13;
+    value ^= value >> 17;
+    value ^= value << 5;
+    desk->random_state = value;
+    return value;
+}
+
+/* Uniform in [lo, hi]. */
+static uint32_t desk_rand_range(desk_mode_t *desk, uint32_t lo, uint32_t hi)
+{
+    return lo + desk_rand(desk) % (hi - lo + 1U);
 }
 
 static float abs_float(float value)
@@ -105,7 +131,9 @@ void desk_mode_init(desk_mode_t *desk, uint32_t now_ms)
     desk->started_ms = now_ms;
     desk->last_activity_ms = now_ms;
     desk->next_blink_ms = now_ms + 1800U;
-    desk->next_gaze_ms = now_ms + GAZE_INTERVAL_MS;
+    desk->next_gaze_ms = now_ms + GAZE_GAP_MIN_MS;
+    /* Seed the idle-life RNG; xorshift needs a non-zero state. */
+    desk->random_state = (now_ms * 2654435761U) | 1U;
     desk->view.eye_open_percent = 100;
     desk->view.comfort = DESK_COMFORT_SENSOR_ERROR;
     desk->view.expression = DESK_EXPRESSION_NEUTRAL;
@@ -232,8 +260,6 @@ static void select_expression(desk_mode_t *desk, uint32_t now_ms)
 
 void desk_mode_update(desk_mode_t *desk, uint32_t now_ms)
 {
-    static const int8_t gaze_x_pattern[] = {0, -7, 0, 7, 3, -3};
-    static const int8_t gaze_y_pattern[] = {0, 1, -2, 1, 0, -1};
     if (desk == NULL) { return; }
 
     desk->view.uptime_seconds = (now_ms - desk->started_ms) / 1000U;
@@ -243,12 +269,27 @@ void desk_mode_update(desk_mode_t *desk, uint32_t now_ms)
                           !time_reached(now_ms, desk->reaction_until_ms);
     desk->view.reaction_elapsed_ms = now_ms - desk->reaction_started_ms;
 
+    /* Idle glance: mostly a random dart, sometimes a return to centre; the eyes
+     * tend to blink as they dart (upstream engine idle-glance behavior). */
     if (!desk->view.reacting && time_reached(now_ms, desk->next_gaze_ms)) {
-        desk->gaze_step = (uint8_t)((desk->gaze_step + 1U) %
-            (sizeof(gaze_x_pattern) / sizeof(gaze_x_pattern[0])));
-        desk->view.gaze_x = gaze_x_pattern[desk->gaze_step];
-        desk->view.gaze_y = gaze_y_pattern[desk->gaze_step];
-        desk->next_gaze_ms = now_ms + GAZE_INTERVAL_MS;
+        if (desk_rand(desk) % 100U < GAZE_RECENTER_PCT) {
+            desk->view.gaze_x = 0;
+            desk->view.gaze_y = 0;
+        } else {
+            desk->view.gaze_x =
+                (int8_t)((int)(desk_rand(desk) % (2U * GAZE_X_SPAN + 1U)) -
+                         GAZE_X_SPAN);
+            desk->view.gaze_y =
+                (int8_t)((int)(desk_rand(desk) % (2U * GAZE_Y_SPAN + 1U)) -
+                         GAZE_Y_SPAN);
+            if (!desk->blinking &&
+                desk_rand(desk) % 100U < GAZE_DART_BLINK_PCT) {
+                desk->blinking = true;
+                desk->blink_started_ms = now_ms;
+            }
+        }
+        desk->next_gaze_ms =
+            now_ms + desk_rand_range(desk, GAZE_GAP_MIN_MS, GAZE_GAP_MAX_MS);
     }
 
     if (!desk->blinking && time_reached(now_ms, desk->next_blink_ms)) {
@@ -260,8 +301,8 @@ void desk_mode_update(desk_mode_t *desk, uint32_t now_ms)
         if (elapsed_ms >= BLINK_DURATION_MS) {
             desk->blinking = false;
             desk->view.eye_open_percent = 100;
-            desk->next_blink_ms = now_ms + BLINK_INTERVAL_MS +
-                                  (uint32_t)desk->gaze_step * 170U;
+            desk->next_blink_ms = now_ms +
+                desk_rand_range(desk, BLINK_GAP_MIN_MS, BLINK_GAP_MAX_MS);
         } else {
             const uint32_t half_ms = BLINK_DURATION_MS / 2U;
             const uint32_t distance = elapsed_ms < half_ms
