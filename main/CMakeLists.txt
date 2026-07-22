@@ -11,6 +11,7 @@ idf_component_register(
         "drivers/copet_sht31.c"
         "drivers/mpu6050.c"
         "drivers/touch_button.c"
+        "modes/assistant_mode.c"
         "modes/desk_mode.c"
         "modes/focus_mode.c"
         "modes/menu_mode.c"
