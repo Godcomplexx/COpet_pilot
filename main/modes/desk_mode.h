@@ -80,6 +80,11 @@ typedef struct {
     uint32_t motion_reaction_until_ms;
     uint32_t vibe_started_ms;
     uint32_t random_state;
+    uint32_t last_update_ms;
+    float gaze_cur_x;
+    float gaze_cur_y;
+    int8_t gaze_target_x;
+    int8_t gaze_target_y;
     uint8_t touch_reaction_step;
     bool blinking;
 } desk_mode_t;

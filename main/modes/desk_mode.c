@@ -21,6 +21,9 @@ enum {
     GAZE_DART_BLINK_PCT = 40, /* chance the eyes blink as they dart */
     GAZE_X_SPAN = 16,         /* glance target x in [-16, 16] */
     GAZE_Y_SPAN = 7,          /* glance target y in [-7, 7] */
+    /* Time-constant for gliding the gaze to its target (upstream _TAU_GAZE):
+     * the eyes ease across instead of teleporting. */
+    GAZE_TAU_MS = 90,
 };
 
 static bool time_reached(uint32_t now_ms, uint32_t deadline_ms)
@@ -132,6 +135,7 @@ void desk_mode_init(desk_mode_t *desk, uint32_t now_ms)
     desk->last_activity_ms = now_ms;
     desk->next_blink_ms = now_ms + 1800U;
     desk->next_gaze_ms = now_ms + GAZE_GAP_MIN_MS;
+    desk->last_update_ms = now_ms;
     /* Seed the idle-life RNG; xorshift needs a non-zero state. */
     desk->random_state = (now_ms * 2654435761U) | 1U;
     desk->view.eye_open_percent = 100;
@@ -269,17 +273,18 @@ void desk_mode_update(desk_mode_t *desk, uint32_t now_ms)
                           !time_reached(now_ms, desk->reaction_until_ms);
     desk->view.reaction_elapsed_ms = now_ms - desk->reaction_started_ms;
 
-    /* Idle glance: mostly a random dart, sometimes a return to centre; the eyes
-     * tend to blink as they dart (upstream engine idle-glance behavior). */
+    /* Idle glance: pick a new target -- mostly a random dart, sometimes a
+     * return to centre; the eyes tend to blink as they dart (upstream engine
+     * idle-glance behavior). The visible gaze then glides to the target below. */
     if (!desk->view.reacting && time_reached(now_ms, desk->next_gaze_ms)) {
         if (desk_rand(desk) % 100U < GAZE_RECENTER_PCT) {
-            desk->view.gaze_x = 0;
-            desk->view.gaze_y = 0;
+            desk->gaze_target_x = 0;
+            desk->gaze_target_y = 0;
         } else {
-            desk->view.gaze_x =
+            desk->gaze_target_x =
                 (int8_t)((int)(desk_rand(desk) % (2U * GAZE_X_SPAN + 1U)) -
                          GAZE_X_SPAN);
-            desk->view.gaze_y =
+            desk->gaze_target_y =
                 (int8_t)((int)(desk_rand(desk) % (2U * GAZE_Y_SPAN + 1U)) -
                          GAZE_Y_SPAN);
             if (!desk->blinking &&
@@ -290,6 +295,22 @@ void desk_mode_update(desk_mode_t *desk, uint32_t now_ms)
         }
         desk->next_gaze_ms =
             now_ms + desk_rand_range(desk, GAZE_GAP_MIN_MS, GAZE_GAP_MAX_MS);
+    }
+
+    /* Glide the visible gaze toward the target (exponential ease over dt). */
+    {
+        const uint32_t dt_ms = now_ms - desk->last_update_ms;
+        desk->last_update_ms = now_ms;
+        const float alpha =
+            (float)dt_ms / ((float)dt_ms + (float)GAZE_TAU_MS);
+        desk->gaze_cur_x +=
+            ((float)desk->gaze_target_x - desk->gaze_cur_x) * alpha;
+        desk->gaze_cur_y +=
+            ((float)desk->gaze_target_y - desk->gaze_cur_y) * alpha;
+        desk->view.gaze_x = (int8_t)(desk->gaze_cur_x +
+            (desk->gaze_cur_x >= 0.0f ? 0.5f : -0.5f));
+        desk->view.gaze_y = (int8_t)(desk->gaze_cur_y +
+            (desk->gaze_cur_y >= 0.0f ? 0.5f : -0.5f));
     }
 
     if (!desk->blinking && time_reached(now_ms, desk->next_blink_ms)) {
