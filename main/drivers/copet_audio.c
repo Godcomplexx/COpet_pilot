@@ -78,6 +78,7 @@ static volatile bool s_enabled = true;
 static volatile bool s_mic_active;
 static volatile uint8_t s_mic_level;
 static volatile uint8_t s_mic_zcr;
+static volatile uint32_t s_speak_syllables;
 /* When the mic is active, TX is enabled once at init and left on so the shared
  * clock keeps running for the mic; audio_task must then not enable/disable it
  * per clip. */
@@ -139,6 +140,74 @@ static void write_silence(void)
                             &bytes_written, portMAX_DELAY);
 }
 
+/* Synthesize a short "robot voice": one pitched square-wave blip per syllable
+ * with a brief fade so it does not click. A stylized cue, not text-to-speech. */
+static void play_speech(int32_t *buffer)
+{
+    uint32_t syllables = s_speak_syllables;
+    if (syllables < 2U) { syllables = 2U; }
+    if (syllables > 12U) { syllables = 12U; }
+
+    if (!s_tx_always_on &&
+        i2s_channel_enable(s_tx_channel) != ESP_OK) {
+        return;
+    }
+
+    static const uint16_t tones[] = {294, 330, 392, 440, 494, 587};
+    const uint32_t tone_frames = AUDIO_SAMPLE_RATE / 10U;         /* 100 ms */
+    const uint32_t gap_frames = AUDIO_SAMPLE_RATE * 45U / 1000U;  /* 45 ms */
+    const uint32_t ramp = AUDIO_SAMPLE_RATE / 200U;              /* 5 ms fade */
+    uint32_t rng = 0x9E3779B9U ^ (syllables * 2654435761U);
+
+    for (uint32_t s = 0; s < syllables; ++s) {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        const uint32_t freq = tones[rng % (sizeof(tones) / sizeof(tones[0]))];
+        const uint32_t period = AUDIO_SAMPLE_RATE / freq;
+        uint32_t phase = 0;
+
+        for (uint32_t emitted = 0; emitted < tone_frames; ) {
+            const uint32_t chunk =
+                (tone_frames - emitted) < (uint32_t)AUDIO_BUFFER_FRAMES
+                    ? (tone_frames - emitted) : (uint32_t)AUDIO_BUFFER_FRAMES;
+            for (uint32_t f = 0; f < chunk; ++f) {
+                const uint32_t pos = emitted + f;
+                uint32_t env = ramp;
+                if (pos < ramp) { env = pos; }
+                else if (pos + ramp > tone_frames) { env = tone_frames - pos; }
+                const int32_t amp = (int32_t)(6000U * env / ramp);
+                const int16_t sample =
+                    (int16_t)(phase < period / 2U ? amp : -amp);
+                const int32_t wide = (int32_t)sample << 16;
+                buffer[f * 2] = wide;
+                buffer[f * 2 + 1] = wide;
+                if (++phase >= period) { phase = 0; }
+            }
+            size_t written = 0;
+            (void)i2s_channel_write(s_tx_channel, buffer,
+                                    chunk * 2U * sizeof(buffer[0]),
+                                    &written, portMAX_DELAY);
+            emitted += chunk;
+        }
+        for (uint32_t emitted = 0; emitted < gap_frames; ) {
+            const uint32_t chunk =
+                (gap_frames - emitted) < (uint32_t)AUDIO_BUFFER_FRAMES
+                    ? (gap_frames - emitted) : (uint32_t)AUDIO_BUFFER_FRAMES;
+            for (uint32_t f = 0; f < chunk * 2U; ++f) { buffer[f] = 0; }
+            size_t written = 0;
+            (void)i2s_channel_write(s_tx_channel, buffer,
+                                    chunk * 2U * sizeof(buffer[0]),
+                                    &written, portMAX_DELAY);
+            emitted += chunk;
+        }
+    }
+
+    write_silence();
+    vTaskDelay(pdMS_TO_TICKS(12));
+    if (!s_tx_always_on) {
+        (void)i2s_channel_disable(s_tx_channel);
+    }
+}
+
 static void audio_task(void *argument)
 {
     (void)argument;
@@ -162,6 +231,11 @@ static void audio_task(void *argument)
             continue;
         }
         if (!s_enabled) {
+            continue;
+        }
+
+        if (event == COPET_AUDIO_ASSISTANT_SPEAK) {
+            play_speech(stereo_samples);
             continue;
         }
 
@@ -459,5 +533,21 @@ esp_err_t copet_audio_play_event(copet_audio_event_t event)
         return ESP_ERR_TIMEOUT;
     }
     ESP_LOGI(TAG, "Queued %s", clip.name);
+    return ESP_OK;
+}
+
+esp_err_t copet_audio_speak(uint32_t syllables)
+{
+    if (s_event_queue == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_enabled) {
+        return ESP_OK;
+    }
+    s_speak_syllables = syllables;
+    const copet_audio_event_t event = COPET_AUDIO_ASSISTANT_SPEAK;
+    if (xQueueSend(s_event_queue, &event, 0) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
     return ESP_OK;
 }

@@ -81,6 +81,22 @@ static void play_audio_event(bool audio_available,
     }
 }
 
+/* Word count, used to size the assistant's synthesized "speech". */
+static uint32_t count_words(const char *text)
+{
+    uint32_t words = 0;
+    bool in_word = false;
+    for (const char *p = text; *p != '\0'; ++p) {
+        if (*p == ' ') {
+            in_word = false;
+        } else if (!in_word) {
+            in_word = true;
+            ++words;
+        }
+    }
+    return words;
+}
+
 static void post_behavior(copet_behavior_t *behavior,
                           copet_behavior_event_type_t type,
                           int32_t value,
@@ -524,6 +540,11 @@ void app_main(void)
                                              assistant_snapshot.text,
                                              assistant_snapshot.mood,
                                              (uint32_t)now_ms);
+                    if (audio_available) {
+                        /* Retro "robot voice" sized to the answer length. */
+                        copet_audio_speak(
+                            count_words(assistant_snapshot.text));
+                    }
                 } else if (assistant_snapshot.status ==
                            ASSISTANT_SERVICE_ERROR) {
                     assistant_mode_on_error(&assistant,
