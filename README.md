@@ -11,7 +11,7 @@ phone app or cloud required.**
 ![Status](<https://img.shields.io/badge/status-working%20prototype-brightgreen>)
 ![Platform](https://img.shields.io/badge/platform-ESP32--WROOM--32-blue)
 ![Framework](<https://img.shields.io/badge/framework-ESP--IDF%205.5-red>)
-![Host tests](<https://img.shields.io/badge/host%20tests-208%20passing-brightgreen>)
+![Host tests](<https://img.shields.io/badge/host%20tests-213%20passing-brightgreen>)
 
 `ESP32` · `ESP‑IDF` · `C` · `SPI` · `I²C` · `I²S` · `Wi‑Fi` · `BLE` · `Embedded UI`
 
@@ -239,7 +239,7 @@ Hardware‑independent logic is tested on the development machine (no board):
 | `desk_mode`                                                                    | Motion classification (carry / tilt / impact / fall)                   |
 | `menu_mode` · `settings_mode` · `animation_mode` · `wifi_credentials` | Selection, toggles, timing, network matching                           |
 
-**Current result: 208 checks passing across 8 suites (70 behavior checks).**
+**Current result: 213 checks passing across 8 suites (70 behavior checks).**
 
 ```bash
 powershell -File test/host/run_tests.ps1
