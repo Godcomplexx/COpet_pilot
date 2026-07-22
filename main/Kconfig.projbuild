@@ -95,6 +95,15 @@ menu "CoPet Pilot"
         help
             WGS84 longitude. Default is Samara.
 
+    config COPET_TIMEZONE
+        string "Local timezone (POSIX TZ)"
+        default "<+04>-4"
+        help
+            POSIX TZ string for the clock the assistant reads after SNTP sync.
+            Default "<+04>-4" is Samara time (UTC+4, no DST). Note the POSIX
+            sign is inverted: the "-4" means UTC+4. Examples: Moscow "MSK-3",
+            UTC "UTC0".
+
     config COPET_ASSISTANT_ENABLED
         bool "Enable Assistant Mode"
         default y

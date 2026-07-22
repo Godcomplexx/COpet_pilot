@@ -17,7 +17,10 @@ enum {
     AUDIO_PIN_MIC_DIN = 34,
     AUDIO_SAMPLE_RATE = 16000,
     AUDIO_BUFFER_FRAMES = 128,
-    AUDIO_OUTPUT_GAIN_PERCENT = 40,
+    AUDIO_OUTPUT_GAIN_PERCENT = 25,
+    /* The assistant's voice is louder than the UI blips: it is the thing you
+     * lean in to hear. Scaled below full scale, so still no clipping. */
+    AUDIO_SPEECH_GAIN_PERCENT = 80,
     /* INMP441 left-justifies 24 valid bits in a 32-bit slot. Shifting the raw
      * word right by this keeps the upper part of that 24-bit range: >>16 threw
      * away the lower 8 bits where quieter, at-a-distance music lives, so it
@@ -219,7 +222,7 @@ static void play_speech(int32_t *buffer)
                 uint32_t env = ramp;
                 if (pos < ramp) { env = pos; }
                 else if (pos + ramp > tone_frames) { env = tone_frames - pos; }
-                const int32_t amp = (int32_t)(9000U * env / ramp);
+                const int32_t amp = (int32_t)(16000U * env / ramp);
                 const int16_t sample =
                     (int16_t)(phase < period / 2U ? amp : -amp);
                 const int32_t wide = (int32_t)sample << 16;
@@ -266,7 +269,7 @@ static void play_pcm_upsampled(int32_t *buffer, const uint8_t *start,
         const int16_t raw =
             (int16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8));
         const int16_t scaled =
-            (int16_t)(((int32_t)raw * AUDIO_OUTPUT_GAIN_PERCENT) / 100);
+            (int16_t)(((int32_t)raw * AUDIO_SPEECH_GAIN_PERCENT) / 100);
         const int32_t wide = (int32_t)scaled << 16;
         for (int rep = 0; rep < 2; ++rep) { /* 8 kHz -> 16 kHz */
             buffer[out_frames * 2] = wide;

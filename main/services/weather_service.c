@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -105,13 +106,17 @@ static esp_err_t synchronize_time(void)
     if (s_time_synchronized) { return ESP_OK; }
 
     if (!s_time_service_started) {
+        /* Set the local timezone so time() reads local wall-clock time (the
+         * assistant speaks it). Default is Samara, UTC+4. */
+        setenv("TZ", CONFIG_COPET_TIMEZONE, 1);
+        tzset();
         const esp_sntp_config_t configuration =
             ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
         const esp_err_t init_result =
             esp_netif_sntp_init(&configuration);
         if (init_result != ESP_OK) { return init_result; }
         s_time_service_started = true;
-        ESP_LOGI(TAG, "Waiting for SNTP time");
+        ESP_LOGI(TAG, "Waiting for SNTP time (TZ=%s)", CONFIG_COPET_TIMEZONE);
     }
 
     const esp_err_t sync_result = esp_netif_sntp_sync_wait(
