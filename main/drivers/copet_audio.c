@@ -17,7 +17,7 @@ enum {
     AUDIO_PIN_MIC_DIN = 34,
     AUDIO_SAMPLE_RATE = 16000,
     AUDIO_BUFFER_FRAMES = 128,
-    AUDIO_OUTPUT_GAIN_PERCENT = 25,
+    AUDIO_OUTPUT_GAIN_PERCENT = 40,
     /* INMP441 left-justifies 24 valid bits in a 32-bit slot. Shifting the raw
      * word right by this keeps the upper part of that 24-bit range: >>16 threw
      * away the lower 8 bits where quieter, at-a-distance music lives, so it
@@ -219,7 +219,7 @@ static void play_speech(int32_t *buffer)
                 uint32_t env = ramp;
                 if (pos < ramp) { env = pos; }
                 else if (pos + ramp > tone_frames) { env = tone_frames - pos; }
-                const int32_t amp = (int32_t)(6000U * env / ramp);
+                const int32_t amp = (int32_t)(9000U * env / ramp);
                 const int16_t sample =
                     (int16_t)(phase < period / 2U ? amp : -amp);
                 const int32_t wide = (int32_t)sample << 16;
