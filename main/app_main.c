@@ -20,12 +20,15 @@
 #include "drivers/copet_sht31.h"
 #include "drivers/mpu6050.h"
 #include "drivers/touch_button.h"
+#include "modes/assistant_mode.h"
 #include "modes/desk_mode.h"
 #include "modes/focus_mode.h"
 #include "modes/menu_mode.h"
 #include "modes/settings_mode.h"
+#include "services/assistant_service.h"
 #include "services/weather_service.h"
 #include "services/wifi_service.h"
+#include "ui/assistant_ui.h"
 #include "ui/boot_ui.h"
 #include "ui/desk_ui.h"
 #include "ui/diag_ui.h"
@@ -123,6 +126,7 @@ static void render_active_mode(copet_mode_t mode, const desk_mode_t *desk,
                                const menu_mode_t *menu,
                                const focus_mode_t *focus,
                                const settings_mode_t *settings,
+                               const assistant_mode_t *assistant,
                                const copet_behavior_view_t *behavior,
                                const char *network_status,
                                const weather_service_snapshot_t *weather,
@@ -147,6 +151,9 @@ static void render_active_mode(copet_mode_t mode, const desk_mode_t *desk,
         break;
     case COPET_MODE_FOCUS:
         focus_ui_render(fb, width, height, focus);
+        break;
+    case COPET_MODE_ASSISTANT:
+        assistant_ui_render(fb, width, height, assistant);
         break;
     case COPET_MODE_PHONE_BRIDGE:
         diag_ui_render_phone_bridge(fb, width, height,
@@ -191,6 +198,13 @@ void app_main(void)
         ESP_LOGE(TAG, "Outdoor weather unavailable: %s",
                  esp_err_to_name(weather_init_result));
     }
+#if CONFIG_COPET_ASSISTANT_ENABLED
+    const esp_err_t assistant_init_result = assistant_service_start();
+    if (assistant_init_result != ESP_OK) {
+        ESP_LOGE(TAG, "Assistant service unavailable: %s",
+                 esp_err_to_name(assistant_init_result));
+    }
+#endif
     show_boot_progress(75, "NETWORK STARTED", BOOT_STAGE_HOLD_MS);
 #if CONFIG_COPET_DIAGNOSTIC_BLE_ENABLED
     const esp_err_t ble_init_result = copet_ble_init();
@@ -233,6 +247,8 @@ void app_main(void)
     menu_mode_t menu;
     focus_mode_t focus;
     settings_mode_t settings;
+    assistant_mode_t assistant;
+    uint32_t displayed_assistant_revision = UINT32_MAX;
     copet_behavior_t behavior;
     copet_ble_status_t displayed_ble_status = COPET_BLE_OFF;
     char ble_message[65] = "NO MESSAGE";
@@ -258,6 +274,7 @@ void app_main(void)
     menu_mode_init(&menu);
     focus_mode_init(&focus);
     settings_mode_init(&settings, true);
+    assistant_mode_init(&assistant);
     if (audio_available) {
         copet_audio_set_enabled(settings.sound_enabled);
     }
@@ -282,7 +299,8 @@ void app_main(void)
                               0, (uint32_t)now_ms);
             } else if (mode == COPET_MODE_MENU ||
                        mode == COPET_MODE_FOCUS ||
-                       mode == COPET_MODE_SETTINGS) {
+                       mode == COPET_MODE_SETTINGS ||
+                       mode == COPET_MODE_ASSISTANT) {
                 post_behavior(&behavior, COPET_BEHAVIOR_EVENT_CONFIRM,
                               0, (uint32_t)now_ms);
             } else {
@@ -311,6 +329,9 @@ void app_main(void)
                                  COPET_AUDIO_MENU_CONFIRM);
                 mode = item->mode;
                 ESP_LOGI(TAG, "Mode opened: %s", item->label);
+                if (mode == COPET_MODE_ASSISTANT) {
+                    assistant_mode_init(&assistant); /* fresh IDLE on entry */
+                }
                 if (mode == COPET_MODE_PHONE_BRIDGE && ble_available) {
                     const esp_err_t result = copet_ble_start();
                     if (result != ESP_OK) {
@@ -346,6 +367,25 @@ void app_main(void)
                 }
                 ESP_LOGI(TAG, "Sound setting: %s",
                          settings_mode_sound_label(&settings));
+            } else if (mode == COPET_MODE_ASSISTANT) {
+                if (assistant.state == ASSISTANT_IDLE) {
+                    const assistant_preset_t *preset =
+                        assistant_mode_submit(&assistant, (uint32_t)now_ms);
+                    if (preset != NULL) {
+                        play_audio_event(audio_available,
+                                         COPET_AUDIO_MENU_CONFIRM);
+                        const esp_err_t sent = assistant_service_submit(
+                            preset->type, preset->text);
+                        if (sent != ESP_OK) {
+                            assistant_mode_on_error(&assistant, "SERVICE BUSY",
+                                                    (uint32_t)now_ms);
+                        }
+                        ESP_LOGI(TAG, "Assistant query: %s", preset->label);
+                    }
+                } else {
+                    /* Tap dismisses a result/error (or cancels the wait). */
+                    assistant_mode_back(&assistant);
+                }
             }
             force_redraw = true;
         } else if (touch_event == TOUCH_BUTTON_EVENT_LONG) {
@@ -467,6 +507,36 @@ void app_main(void)
             }
         }
 
+#if CONFIG_COPET_ASSISTANT_ENABLED
+        /* Client-side timeout, then fold any new service answer into the mode. */
+        if (assistant_mode_tick(&assistant, (uint32_t)now_ms) &&
+            mode == COPET_MODE_ASSISTANT) {
+            redraw = true;
+        }
+        assistant_service_snapshot_t assistant_snapshot;
+        assistant_service_get_snapshot(&assistant_snapshot);
+        if (assistant_snapshot.revision != displayed_assistant_revision) {
+            displayed_assistant_revision = assistant_snapshot.revision;
+            if (assistant.state == ASSISTANT_WAITING) {
+                if (assistant_snapshot.status == ASSISTANT_SERVICE_READY &&
+                    assistant_snapshot.has_answer) {
+                    assistant_mode_on_answer(&assistant,
+                                             assistant_snapshot.text,
+                                             assistant_snapshot.mood,
+                                             (uint32_t)now_ms);
+                } else if (assistant_snapshot.status ==
+                           ASSISTANT_SERVICE_ERROR) {
+                    assistant_mode_on_error(&assistant,
+                                            assistant_snapshot.text[0] != '\0'
+                                                ? assistant_snapshot.text
+                                                : "NO RESPONSE",
+                                            (uint32_t)now_ms);
+                }
+            }
+            if (mode == COPET_MODE_ASSISTANT) { redraw = true; }
+        }
+#endif
+
         const copet_ble_status_t ble_status =
             ble_available ? copet_ble_get_status() : COPET_BLE_ERROR;
         if (ble_status != displayed_ble_status) {
@@ -571,6 +641,15 @@ void app_main(void)
                 ESP_LOGI(TAG, "Focus preset: %s",
                          focus_mode_preset_label(&focus));
                 force_redraw = true;
+            } else if (real_step && mode == COPET_MODE_ASSISTANT &&
+                       assistant.state == ASSISTANT_IDLE) {
+                const int32_t logical_steps =
+                    encoder_position - displayed_encoder_position;
+                assistant_mode_scroll(&assistant, logical_steps);
+                play_audio_event(audio_available, COPET_AUDIO_MENU_MOVE);
+                ESP_LOGI(TAG, "Assistant preset: %s",
+                         assistant_mode_selected_preset(&assistant)->label);
+                force_redraw = true;
             }
             displayed_encoder_position = encoder_position;
             displayed_encoder_ab = encoder_ab;
@@ -643,7 +722,7 @@ void app_main(void)
 
         if (redraw || force_redraw) {
             render_active_mode(mode, &desk, &menu, &focus, &settings,
-                               behavior_view,
+                               &assistant, behavior_view,
                                wifi_service_status_label(wifi_status),
                                &weather, desk_environment, ble_status,
                                ble_message);

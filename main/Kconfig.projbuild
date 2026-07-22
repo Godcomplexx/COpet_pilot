@@ -95,4 +95,14 @@ menu "CoPet Pilot"
         help
             WGS84 longitude. Default is Samara.
 
+    config COPET_ASSISTANT_ENABLED
+        bool "Enable Assistant Mode"
+        default y
+        help
+            Show the Assistant screen in the menu and start its background
+            service. The current backend is a local stub that returns canned
+            answers, so the whole flow (query -> card -> face reaction) works
+            with no cloud API or keys. A real HTTPS backend lands later
+            (see docs/27_assistant_m7_plan.md).
+
 endmenu
