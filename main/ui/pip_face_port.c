@@ -352,6 +352,56 @@ static void draw_number(face_canvas_t *canvas, float cx, float cy, int value,
     draw_digit(canvas, x, y, ones, color);
 }
 
+static void draw_big_digit(face_canvas_t *canvas, float x, float y, int digit,
+                           float scale, color_t color)
+{
+    if (digit < 0 || digit > 9) { return; }
+    for (int row = 0; row < 5; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            if ((DIGIT_GLYPHS[digit][row] & (1U << (2 - col))) != 0U) {
+                fill_rect(canvas, x + (float)col * scale,
+                          y + (float)row * scale, scale, scale, color);
+            }
+        }
+    }
+}
+
+/* One clock digit, or a dash when the value is unknown (< 0). */
+static void draw_clock_slot(face_canvas_t *canvas, float x, float y, int digit,
+                            float scale, color_t color)
+{
+    if (digit >= 0) {
+        draw_big_digit(canvas, x, y, digit, scale, color);
+    } else {
+        fill_rect(canvas, x, y + 2.0f * scale, 3.0f * scale, scale, color);
+    }
+}
+
+/* Draw HH:MM centred where the eyes sit. hour < 0 => not synced (dashes). */
+static void draw_clock(face_canvas_t *canvas, int hour, int minute,
+                       color_t color)
+{
+    const float s = 5.0f;
+    const float dw = 3.0f * s;
+    const float gap = s;
+    const float colon_w = 2.0f * s;
+    const float total = dw * 4.0f + gap * 4.0f + colon_w;
+    float x = 64.0f - total * 0.5f;
+    const float y = 32.0f - 2.5f * s;
+    const bool synced = hour >= 0;
+
+    draw_clock_slot(canvas, x, y, synced ? hour / 10 : -1, s, color);
+    x += dw + gap;
+    draw_clock_slot(canvas, x, y, synced ? hour % 10 : -1, s, color);
+    x += dw + gap;
+    fill_rect(canvas, x + s * 0.5f, y + s, s, s, color);
+    fill_rect(canvas, x + s * 0.5f, y + s * 3.0f, s, s, color);
+    x += colon_w + gap;
+    draw_clock_slot(canvas, x, y, synced ? minute / 10 : -1, s, color);
+    x += dw + gap;
+    draw_clock_slot(canvas, x, y, synced ? minute % 10 : -1, s, color);
+}
+
 static void draw_z(face_canvas_t *canvas, float x, float y,
                    float size, color_t color)
 {
@@ -1248,7 +1298,10 @@ static void render_face_layers(face_canvas_t *canvas,
     const float left_x = 41.0f + pose.gaze_x + pose.motion_x;
     const float right_x = 87.0f + pose.gaze_x + pose.motion_x;
     const float center_y = 32.0f + pose.gaze_y + pose.motion_y;
-    if (base_neutral && desk != NULL &&
+    if (desk != NULL && desk->clock_active) {
+        /* Triple-tap clock: the time replaces the eyes for a few seconds. */
+        draw_clock(canvas, desk->clock_hour, desk->clock_minute, eye_color);
+    } else if (base_neutral && desk != NULL &&
         desk->expression == DESK_EXPRESSION_SLEEPY) {
         /* Upstream sleepy is a bare mood: it draws its own nap timeline. */
         draw_sleepy(canvas, now, eye_color);

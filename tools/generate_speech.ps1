@@ -41,9 +41,10 @@ foreach ($name in $words.Keys) {
     $synth.Speak($words[$name])
     $synth.SetOutputToNull()
 
-    # Trim leading/trailing near-silence, then 8 kHz / mono / s16le raw PCM.
+    # Trim near-silence, boost loudness with a limiter (louder without clipping),
+    # then 8 kHz / mono / s16le raw PCM.
     & ffmpeg -y -loglevel error -i $wav `
-        -af "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.02:stop_periods=-1:stop_threshold=-45dB:stop_silence=0.05" `
+        -af "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.02:stop_periods=-1:stop_threshold=-45dB:stop_silence=0.05,volume=9dB,alimiter=level_in=1:level_out=1:limit=0.97" `
         -ar 8000 -ac 1 -f s16le $pcm
     if ($LASTEXITCODE -ne 0) { throw "ffmpeg failed for $name" }
     $count++

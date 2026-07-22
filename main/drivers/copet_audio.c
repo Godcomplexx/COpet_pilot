@@ -20,7 +20,7 @@ enum {
     AUDIO_OUTPUT_GAIN_PERCENT = 25,
     /* The assistant's voice is louder than the UI blips: it is the thing you
      * lean in to hear. Scaled below full scale, so still no clipping. */
-    AUDIO_SPEECH_GAIN_PERCENT = 80,
+    AUDIO_SPEECH_GAIN_PERCENT = 100,
     /* INMP441 left-justifies 24 valid bits in a 32-bit slot. Shifting the raw
      * word right by this keeps the upper part of that 24-bit range: >>16 threw
      * away the lower 8 bits where quieter, at-a-distance music lives, so it

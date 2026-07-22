@@ -99,28 +99,24 @@ static uint32_t count_words(const char *text)
     return words;
 }
 
-/* Show + speak the current local time on the assistant card (triple-tap). */
-static void announce_time(assistant_mode_t *assistant, bool audio_available)
+/* Triple-tap: show the time on the face (in place of the eyes) and speak it. */
+static void announce_time_on_desk(desk_mode_t *desk, bool audio_available,
+                                  uint32_t now_ms)
 {
     const time_t now = time(NULL);
     struct tm local_time;
     localtime_r(&now, &local_time);
-    if (local_time.tm_year + 1900 >= 2021) {
-        char text[ASSISTANT_TEXT_MAX];
-        snprintf(text, sizeof(text), "IT IS %02d:%02d", local_time.tm_hour,
-                 local_time.tm_min);
-        assistant_mode_show_result(assistant, text, "neutral");
-        if (audio_available) {
+    const bool synced = local_time.tm_year + 1900 >= 2021;
+    desk_mode_show_clock(desk, synced ? local_time.tm_hour : -1,
+                         synced ? local_time.tm_min : -1, now_ms);
+    if (audio_available) {
+        if (synced) {
             speech_word_t words[SPEECH_MAX_WORDS];
             const int spoken = copet_speech_time(local_time.tm_hour,
                                                  local_time.tm_min, words,
                                                  SPEECH_MAX_WORDS);
             copet_audio_say(words, spoken);
-        }
-    } else {
-        assistant_mode_show_result(assistant, "TIME NOT SYNCED YET.",
-                                   "neutral");
-        if (audio_available) {
+        } else {
             copet_audio_speak(2);
         }
     }
@@ -369,9 +365,9 @@ void app_main(void)
                     register_clock_tap(&tap_count, &last_tap_ms, now_ms);
             }
             if (triple_time) {
-                announce_time(&assistant, audio_available);
-                mode = COPET_MODE_ASSISTANT;
-                ESP_LOGI(TAG, "Triple-tap: announce time");
+                announce_time_on_desk(&desk, audio_available,
+                                      (uint32_t)now_ms);
+                ESP_LOGI(TAG, "Triple-tap: show time");
             } else {
             if (mode == COPET_MODE_DESK) {
                 post_behavior(&behavior, COPET_BEHAVIOR_EVENT_TOUCH_SHORT,
@@ -476,9 +472,9 @@ void app_main(void)
             if (mode == COPET_MODE_DESK) {
                 /* A held tap still counts toward the triple-tap clock gesture. */
                 if (register_clock_tap(&tap_count, &last_tap_ms, now_ms)) {
-                    announce_time(&assistant, audio_available);
-                    mode = COPET_MODE_ASSISTANT;
-                    ESP_LOGI(TAG, "Triple-tap: announce time");
+                    announce_time_on_desk(&desk, audio_available,
+                                          (uint32_t)now_ms);
+                    ESP_LOGI(TAG, "Triple-tap: show time");
                 }
             } else {
                 if (mode == COPET_MODE_PHONE_BRIDGE && ble_available) {

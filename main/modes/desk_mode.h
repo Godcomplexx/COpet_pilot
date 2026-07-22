@@ -61,6 +61,11 @@ typedef struct {
     int8_t gaze_y;
     int8_t bob_y;
     uint8_t eye_open_percent;
+    /* Triple-tap clock: while active the face shows the time instead of eyes.
+     * clock_hour < 0 means the time is not synced yet (draw dashes). */
+    bool clock_active;
+    int8_t clock_hour;
+    int8_t clock_minute;
     uint32_t uptime_seconds;
     uint32_t inactivity_seconds;
     uint32_t animation_time_ms;
@@ -79,6 +84,7 @@ typedef struct {
     uint32_t reaction_until_ms;
     uint32_t motion_reaction_until_ms;
     uint32_t vibe_started_ms;
+    uint32_t clock_until_ms;
     uint32_t random_state;
     uint32_t last_update_ms;
     float gaze_cur_x;
@@ -95,6 +101,11 @@ void desk_mode_set_environment(desk_mode_t *desk, bool sensor_ok,
                                float humidity_percent);
 void desk_mode_on_touch(desk_mode_t *desk, uint32_t now_ms);
 void desk_mode_on_activity(desk_mode_t *desk, uint32_t now_ms);
+
+/* Show the time on the face (in place of the eyes) for a few seconds. Pass
+ * hour < 0 when the clock is not synced yet (the face shows dashes). */
+void desk_mode_show_clock(desk_mode_t *desk, int hour, int minute,
+                          uint32_t now_ms);
 desk_motion_event_t desk_mode_set_motion_sample(
     desk_mode_t *desk, bool available,
     float accel_x_g, float accel_y_g, float accel_z_g,
