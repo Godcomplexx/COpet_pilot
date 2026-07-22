@@ -69,6 +69,13 @@ void assistant_mode_on_answer(assistant_mode_t *assistant, const char *text,
 void assistant_mode_on_error(assistant_mode_t *assistant, const char *text,
                              uint32_t now_ms);
 
+/*
+ * Show a result directly, from any state -- for a local skill (e.g. the
+ * triple-tap clock) that answers on-device without going through the service.
+ */
+void assistant_mode_show_result(assistant_mode_t *assistant, const char *text,
+                                const char *mood);
+
 /* Advance timers: a WAITING request past the timeout becomes ERROR. Returns
  * true when the state changed. */
 bool assistant_mode_tick(assistant_mode_t *assistant, uint32_t now_ms);

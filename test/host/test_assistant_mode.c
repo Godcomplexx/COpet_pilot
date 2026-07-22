@@ -82,6 +82,20 @@ static void test_timeout(void)
     CHECK(a.state == ASSISTANT_ERROR);
 }
 
+static void test_show_result_directly(void)
+{
+    assistant_mode_t a;
+    assistant_mode_init(&a);
+    /* A local skill can show a result without going through WAITING. */
+    assistant_mode_show_result(&a, "IT IS 14:30", "neutral");
+    CHECK(a.state == ASSISTANT_RESULT);
+    CHECK(a.has_result);
+    CHECK_STR(a.result_text, "IT IS 14:30");
+    CHECK_STR(a.result_mood, "neutral");
+    assistant_mode_back(&a);
+    CHECK(a.state == ASSISTANT_IDLE);
+}
+
 static void test_state_labels(void)
 {
     CHECK_STR(assistant_mode_state_label(ASSISTANT_IDLE), "IDLE");
@@ -96,6 +110,7 @@ int main(void)
     test_submit_then_answer();
     test_error_path();
     test_timeout();
+    test_show_result_directly();
     test_state_labels();
     TEST_REPORT("assistant_mode");
 }

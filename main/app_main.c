@@ -56,6 +56,7 @@ enum {
     MOTION_IMPACT_LOCK_MS = 1900,
     BOOT_STAGE_HOLD_MS = 80,
     BOOT_FINAL_HOLD_MS = 250,
+    TRIPLE_TAP_WINDOW_MS = 800, /* max gap between taps of the clock gesture */
 };
 
 static void show_boot_progress(uint8_t progress_percent, const char *status,
@@ -96,6 +97,33 @@ static uint32_t count_words(const char *text)
         }
     }
     return words;
+}
+
+/* Show + speak the current local time on the assistant card (triple-tap). */
+static void announce_time(assistant_mode_t *assistant, bool audio_available)
+{
+    const time_t now = time(NULL);
+    struct tm local_time;
+    localtime_r(&now, &local_time);
+    if (local_time.tm_year + 1900 >= 2021) {
+        char text[ASSISTANT_TEXT_MAX];
+        snprintf(text, sizeof(text), "IT IS %02d:%02d", local_time.tm_hour,
+                 local_time.tm_min);
+        assistant_mode_show_result(assistant, text, "neutral");
+        if (audio_available) {
+            speech_word_t words[SPEECH_MAX_WORDS];
+            const int spoken = copet_speech_time(local_time.tm_hour,
+                                                 local_time.tm_min, words,
+                                                 SPEECH_MAX_WORDS);
+            copet_audio_say(words, spoken);
+        }
+    } else {
+        assistant_mode_show_result(assistant, "TIME NOT SYNCED YET.",
+                                   "neutral");
+        if (audio_available) {
+            copet_audio_speak(2);
+        }
+    }
 }
 
 static void post_behavior(copet_behavior_t *behavior,
@@ -255,6 +283,8 @@ void app_main(void)
     bool force_redraw = true;
     bool pet_active = false;
     int64_t pet_start_ms = 0;
+    int tap_count = 0;
+    int64_t last_tap_ms = -100000;
     music_detector_t music;
     music_detector_init(&music);
 #if CONFIG_COPET_MUSIC_DEBUG
@@ -311,6 +341,25 @@ void app_main(void)
         if (touch_event == TOUCH_BUTTON_EVENT_SHORT) {
             ESP_LOGI(TAG, "TOUCH_SHORT");
             desk_mode_on_activity(&desk, (uint32_t)now_ms);
+            /* Triple-tap on Desk is a shortcut: show + speak the time. */
+            bool triple_time = false;
+            if (mode == COPET_MODE_DESK) {
+                if (now_ms - last_tap_ms <= TRIPLE_TAP_WINDOW_MS) {
+                    ++tap_count;
+                } else {
+                    tap_count = 1;
+                }
+                last_tap_ms = now_ms;
+                if (tap_count >= 3) {
+                    tap_count = 0;
+                    triple_time = true;
+                }
+            }
+            if (triple_time) {
+                announce_time(&assistant, audio_available);
+                mode = COPET_MODE_ASSISTANT;
+                ESP_LOGI(TAG, "Triple-tap: announce time");
+            } else {
             if (mode == COPET_MODE_DESK) {
                 post_behavior(&behavior, COPET_BEHAVIOR_EVENT_TOUCH_SHORT,
                               0, (uint32_t)now_ms);
@@ -404,6 +453,7 @@ void app_main(void)
                     assistant_mode_back(&assistant);
                 }
             }
+            } /* end: not a triple-tap */
             force_redraw = true;
         } else if (touch_event == TOUCH_BUTTON_EVENT_LONG) {
             ESP_LOGI(TAG, "TOUCH_LONG");

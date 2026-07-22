@@ -100,6 +100,16 @@ void assistant_mode_on_error(assistant_mode_t *assistant, const char *text,
     assistant->state = ASSISTANT_ERROR;
 }
 
+void assistant_mode_show_result(assistant_mode_t *assistant, const char *text,
+                                const char *mood)
+{
+    if (assistant == NULL) { return; }
+    copy_bounded(assistant->result_text, sizeof(assistant->result_text), text);
+    copy_bounded(assistant->result_mood, sizeof(assistant->result_mood), mood);
+    assistant->has_result = true;
+    assistant->state = ASSISTANT_RESULT;
+}
+
 bool assistant_mode_tick(assistant_mode_t *assistant, uint32_t now_ms)
 {
     if (assistant == NULL || assistant->state != ASSISTANT_WAITING) {
