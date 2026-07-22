@@ -8,10 +8,10 @@ phone app or cloud required.**
   <img src="docs/media/copet-hero.jpg" width="760" alt="CoPet Pilot prototype">
 </p>
 
-![Status](https://img.shields.io/badge/status-working%20prototype-brightgreen)
+![Status](<https://img.shields.io/badge/status-working%20prototype-brightgreen>)
 ![Platform](https://img.shields.io/badge/platform-ESP32--WROOM--32-blue)
-![Framework](https://img.shields.io/badge/framework-ESP--IDF%206.0-red)
-![Host tests](https://img.shields.io/badge/host%20tests-210%20passing-brightgreen)
+![Framework](<https://img.shields.io/badge/framework-ESP--IDF%205.5-red>)
+![Host tests](<https://img.shields.io/badge/host%20tests-208%20passing-brightgreen>)
 
 `ESP32` · `ESP‑IDF` · `C` · `SPI` · `I²C` · `I²S` · `Wi‑Fi` · `BLE` · `Embedded UI`
 
@@ -41,8 +41,8 @@ The prototype boots straight into **Desk Mode**, where the character:
 
 <!-- Add the GIFs/photos listed in docs/media/README.md; paths are ready. -->
 
-| Desk Mode | Focus Mode | Hardware prototype |
-|---|---|---|
+| Desk Mode                              | Focus Mode                               | Hardware prototype                     |
+| -------------------------------------- | ---------------------------------------- | -------------------------------------- |
 | ![Desk Mode](docs/media/desk-mode.gif) | ![Focus Mode](docs/media/focus-mode.gif) | ![Prototype](docs/media/prototype.jpg) |
 
 Screen flow and wireframes: [screen storyboard](docs/ux/screen_storyboard.svg) ·
@@ -148,17 +148,17 @@ Also included:
 
 ## Hardware
 
-| Subsystem | Component | Interface | Purpose |
-|---|---|---|---|
-| Controller | ESP32‑WROOM‑32 DevKit | — | Processing and connectivity |
-| Display | ST7789, 240 × 240 | SPI | Face and user interface |
-| Input | Mouse‑wheel encoder | GPIO | Menu navigation, timer presets |
-| Touch | TTP223 | GPIO | Contextual interaction, petting |
-| Environment | SHT31 | I²C | Temperature and humidity |
-| Motion | MPU6050 | I²C | Motion and orientation events |
-| Microphone | INMP441 | I²S | Digital audio input |
-| Amplifier | MAX98357A | I²S | Speaker output |
-| Connectivity | ESP32 Wi‑Fi / BLE | RF | Weather and diagnostics |
+| Subsystem    | Component               | Interface | Purpose                         |
+| ------------ | ----------------------- | --------- | ------------------------------- |
+| Controller   | ESP32‑WROOM‑32 DevKit | —        | Processing and connectivity     |
+| Display      | ST7789, 240 × 240      | SPI       | Face and user interface         |
+| Input        | Mouse‑wheel encoder    | GPIO      | Menu navigation, timer presets  |
+| Touch        | TTP223                  | GPIO      | Contextual interaction, petting |
+| Environment  | SHT31                   | I²C      | Temperature and humidity        |
+| Motion       | MPU6050                 | I²C      | Motion and orientation events   |
+| Microphone   | INMP441                 | I²S      | Digital audio input             |
+| Amplifier    | MAX98357A               | I²S      | Speaker output                  |
+| Connectivity | ESP32 Wi‑Fi / BLE      | RF        | Weather and diagnostics         |
 
 SD storage and Mini TV are planned after the base architecture stabilizes.
 GPS/GNSS and an outdoor mode are deferred to a later hardware revision. See the
@@ -192,12 +192,12 @@ a host machine and the hardware concerns contained in `drivers/`/`services/`.
 The Behavior Engine turns hardware, timer and network events into the visible
 character behavior shown on screen.
 
-| Priority | Typical source | Behavior |
-|---|---|---|
-| P0 | Critical / safety state | Immediate interruption |
-| P1 | Direct user interaction | High‑priority reaction |
-| P2 | Contextual device state | Temporary contextual behavior |
-| P3 | Background activity | Scheduled idle animation |
+| Priority | Typical source          | Behavior                      |
+| -------- | ----------------------- | ----------------------------- |
+| P0       | Critical / safety state | Immediate interruption        |
+| P1       | Direct user interaction | High‑priority reaction       |
+| P2       | Contextual device state | Temporary contextual behavior |
+| P3       | Background activity     | Scheduled idle animation      |
 
 ```mermaid
 stateDiagram-v2
@@ -231,15 +231,15 @@ retrieval.
 
 Hardware‑independent logic is tested on the development machine (no board):
 
-| Suite | Coverage |
-|---|---|
-| `copet_behavior` | P0–P3 resolution, interruption, cooldown, no‑repeat, petting, motion |
-| `focus_mode` | Presets, start/pause/resume, work↔break, remaining‑time persistence |
-| `music_detector` | Sustained‑fluctuation detection (ignores steady noise) |
-| `desk_mode` | Motion classification (carry / tilt / impact / fall) |
-| `menu_mode` · `settings_mode` · `animation_mode` · `wifi_credentials` | Selection, toggles, timing, network matching |
+| Suite                                                                            | Coverage                                                               |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `copet_behavior`                                                               | P0–P3 resolution, interruption, cooldown, no‑repeat, petting, motion |
+| `focus_mode`                                                                   | Presets, start/pause/resume, work↔break, remaining‑time persistence  |
+| `music_detector`                                                               | Rhythm/beat detection (ignores steady noise and speech)               |
+| `desk_mode`                                                                    | Motion classification (carry / tilt / impact / fall)                   |
+| `menu_mode` · `settings_mode` · `animation_mode` · `wifi_credentials` | Selection, toggles, timing, network matching                           |
 
-**Current result: 210 checks passing across 8 suites (70 behavior checks).**
+**Current result: 208 checks passing across 8 suites (70 behavior checks).**
 
 ```bash
 powershell -File test/host/run_tests.ps1
@@ -266,7 +266,7 @@ modular mode/UI architecture with host‑side tests.
 
 ## Build and flash
 
-**Requirements:** ESP‑IDF 6.0.1, target `esp32`, an ESP32‑WROOM‑32 DevKit.
+**Requirements:** ESP‑IDF 5.5.2, target `esp32`, an ESP32‑WROOM‑32 DevKit.
 
 ```bash
 idf.py set-target esp32
@@ -311,14 +311,14 @@ device still runs and shows `WIFI SET`. Details:
 
 ## Documentation
 
-| Document | Description |
-|---|---|
-| [General specification](CoPet_Pilot_general_spec.md) | Product scope and requirements |
-| [System architecture](docs/01_architecture.md) | Firmware and hardware architecture |
-| [Architecture decisions](docs/architecture/) | Recorded design decisions (ADRs) |
-| [User flows](docs/ux/01_user_cases_and_screen_flow.md) | Screen flow and interactions |
-| [Hardware map](docs/02_hardware_map.md) | Pin plan and integration notes |
-| [Behavior engine](docs/24_behavior_engine_v1_spec.md) | Priorities and animation groups |
+| Document                                                 | Description                          |
+| -------------------------------------------------------- | ------------------------------------ |
+| [General specification](CoPet_Pilot_general_spec.md)      | Product scope and requirements       |
+| [System architecture](docs/01_architecture.md)            | Firmware and hardware architecture   |
+| [Architecture decisions](docs/architecture/)              | Recorded design decisions (ADRs)     |
+| [User flows](docs/ux/01_user_cases_and_screen_flow.md)    | Screen flow and interactions         |
+| [Hardware map](docs/02_hardware_map.md)                   | Pin plan and integration notes       |
+| [Behavior engine](docs/24_behavior_engine_v1_spec.md)     | Priorities and animation groups      |
 | [Wi‑Fi validation](docs/21_wifi_station_learning_log.md) | Direct Wi‑Fi bring‑up on the board |
 
 ---
