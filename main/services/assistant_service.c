@@ -293,6 +293,16 @@ static esp_err_t answer_query(const char *type, const char *text,
                              size_t out_text_cap, char *out_mood,
                              size_t out_mood_cap)
 {
+    /* Weather and time are local skills: answer them from real on-device data
+     * even when a remote backend is configured (a cloud/LLM need not know the
+     * actual room/clock values). Only free-form queries go to the backend. */
+    if (type != NULL &&
+        (strcmp(type, "weather") == 0 || strcmp(type, "time") == 0)) {
+        (void)text;
+        (void)request_id;
+        stub_answer(type, out_text, out_text_cap, out_mood, out_mood_cap);
+        return ESP_OK;
+    }
 #if defined(CONFIG_COPET_ASSISTANT_BACKEND_HTTP)
     if (strlen(CONFIG_COPET_ASSISTANT_ENDPOINT) > 0) {
         return http_query(type, text, request_id, out_text, out_text_cap,
