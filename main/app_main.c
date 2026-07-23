@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_check.h"
 #include "esp_log.h"
@@ -20,12 +21,15 @@
 #include "drivers/copet_sht31.h"
 #include "drivers/mpu6050.h"
 #include "drivers/touch_button.h"
+#include "modes/assistant_mode.h"
 #include "modes/desk_mode.h"
 #include "modes/focus_mode.h"
 #include "modes/menu_mode.h"
 #include "modes/settings_mode.h"
+#include "services/assistant_service.h"
 #include "services/weather_service.h"
 #include "services/wifi_service.h"
+#include "ui/assistant_ui.h"
 #include "ui/boot_ui.h"
 #include "ui/desk_ui.h"
 #include "ui/diag_ui.h"
@@ -52,6 +56,7 @@ enum {
     MOTION_IMPACT_LOCK_MS = 1900,
     BOOT_STAGE_HOLD_MS = 80,
     BOOT_FINAL_HOLD_MS = 250,
+    TRIPLE_TAP_WINDOW_MS = 1500, /* max gap between taps of the clock gesture */
 };
 
 static void show_boot_progress(uint8_t progress_percent, const char *status,
@@ -76,6 +81,64 @@ static void play_audio_event(bool audio_available,
         ESP_LOGW(TAG, "Audio event %d skipped: %s", event,
                  esp_err_to_name(result));
     }
+}
+
+/* Word count, used to size the assistant's synthesized "speech". */
+static uint32_t count_words(const char *text)
+{
+    uint32_t words = 0;
+    bool in_word = false;
+    for (const char *p = text; *p != '\0'; ++p) {
+        if (*p == ' ') {
+            in_word = false;
+        } else if (!in_word) {
+            in_word = true;
+            ++words;
+        }
+    }
+    return words;
+}
+
+/* Triple-tap: show the time on the face (in place of the eyes) and speak it. */
+static void announce_time_on_desk(desk_mode_t *desk, bool audio_available,
+                                  uint32_t now_ms)
+{
+    const time_t now = time(NULL);
+    struct tm local_time;
+    localtime_r(&now, &local_time);
+    const bool synced = local_time.tm_year + 1900 >= 2021;
+    desk_mode_show_clock(desk, synced ? local_time.tm_hour : -1,
+                         synced ? local_time.tm_min : -1, now_ms);
+    if (audio_available) {
+        if (synced) {
+            speech_word_t words[SPEECH_MAX_WORDS];
+            const int spoken = copet_speech_time(local_time.tm_hour,
+                                                 local_time.tm_min, words,
+                                                 SPEECH_MAX_WORDS);
+            copet_audio_say(words, spoken);
+        } else {
+            copet_audio_speak(2);
+        }
+    }
+}
+
+/* Count a tap toward the triple-tap clock gesture; returns true on the third
+ * within the window. Both short and long (held) presses count, so a lingering
+ * finger does not break the sequence. */
+static bool register_clock_tap(int *tap_count, int64_t *last_tap_ms,
+                               int64_t now_ms)
+{
+    if (now_ms - *last_tap_ms <= TRIPLE_TAP_WINDOW_MS) {
+        ++(*tap_count);
+    } else {
+        *tap_count = 1;
+    }
+    *last_tap_ms = now_ms;
+    if (*tap_count >= 3) {
+        *tap_count = 0;
+        return true;
+    }
+    return false;
 }
 
 static void post_behavior(copet_behavior_t *behavior,
@@ -123,6 +186,7 @@ static void render_active_mode(copet_mode_t mode, const desk_mode_t *desk,
                                const menu_mode_t *menu,
                                const focus_mode_t *focus,
                                const settings_mode_t *settings,
+                               const assistant_mode_t *assistant,
                                const copet_behavior_view_t *behavior,
                                const char *network_status,
                                const weather_service_snapshot_t *weather,
@@ -147,6 +211,9 @@ static void render_active_mode(copet_mode_t mode, const desk_mode_t *desk,
         break;
     case COPET_MODE_FOCUS:
         focus_ui_render(fb, width, height, focus);
+        break;
+    case COPET_MODE_ASSISTANT:
+        assistant_ui_render(fb, width, height, assistant);
         break;
     case COPET_MODE_PHONE_BRIDGE:
         diag_ui_render_phone_bridge(fb, width, height,
@@ -191,6 +258,13 @@ void app_main(void)
         ESP_LOGE(TAG, "Outdoor weather unavailable: %s",
                  esp_err_to_name(weather_init_result));
     }
+#if CONFIG_COPET_ASSISTANT_ENABLED
+    const esp_err_t assistant_init_result = assistant_service_start();
+    if (assistant_init_result != ESP_OK) {
+        ESP_LOGE(TAG, "Assistant service unavailable: %s",
+                 esp_err_to_name(assistant_init_result));
+    }
+#endif
     show_boot_progress(75, "NETWORK STARTED", BOOT_STAGE_HOLD_MS);
 #if CONFIG_COPET_DIAGNOSTIC_BLE_ENABLED
     const esp_err_t ble_init_result = copet_ble_init();
@@ -224,6 +298,8 @@ void app_main(void)
     bool force_redraw = true;
     bool pet_active = false;
     int64_t pet_start_ms = 0;
+    int tap_count = 0;
+    int64_t last_tap_ms = -100000;
     music_detector_t music;
     music_detector_init(&music);
 #if CONFIG_COPET_MUSIC_DEBUG
@@ -233,6 +309,8 @@ void app_main(void)
     menu_mode_t menu;
     focus_mode_t focus;
     settings_mode_t settings;
+    assistant_mode_t assistant;
+    uint32_t displayed_assistant_revision = UINT32_MAX;
     copet_behavior_t behavior;
     copet_ble_status_t displayed_ble_status = COPET_BLE_OFF;
     char ble_message[65] = "NO MESSAGE";
@@ -258,6 +336,7 @@ void app_main(void)
     menu_mode_init(&menu);
     focus_mode_init(&focus);
     settings_mode_init(&settings, true);
+    assistant_mode_init(&assistant);
     if (audio_available) {
         copet_audio_set_enabled(settings.sound_enabled);
     }
@@ -277,12 +356,24 @@ void app_main(void)
         if (touch_event == TOUCH_BUTTON_EVENT_SHORT) {
             ESP_LOGI(TAG, "TOUCH_SHORT");
             desk_mode_on_activity(&desk, (uint32_t)now_ms);
+            /* Triple-tap on Desk is a shortcut: show + speak the time. */
+            bool triple_time = false;
+            if (mode == COPET_MODE_DESK) {
+                triple_time =
+                    register_clock_tap(&tap_count, &last_tap_ms, now_ms);
+            }
+            if (triple_time) {
+                announce_time_on_desk(&desk, audio_available,
+                                      (uint32_t)now_ms);
+                ESP_LOGI(TAG, "Triple-tap: show time");
+            } else {
             if (mode == COPET_MODE_DESK) {
                 post_behavior(&behavior, COPET_BEHAVIOR_EVENT_TOUCH_SHORT,
                               0, (uint32_t)now_ms);
             } else if (mode == COPET_MODE_MENU ||
                        mode == COPET_MODE_FOCUS ||
-                       mode == COPET_MODE_SETTINGS) {
+                       mode == COPET_MODE_SETTINGS ||
+                       mode == COPET_MODE_ASSISTANT) {
                 post_behavior(&behavior, COPET_BEHAVIOR_EVENT_CONFIRM,
                               0, (uint32_t)now_ms);
             } else {
@@ -311,6 +402,9 @@ void app_main(void)
                                  COPET_AUDIO_MENU_CONFIRM);
                 mode = item->mode;
                 ESP_LOGI(TAG, "Mode opened: %s", item->label);
+                if (mode == COPET_MODE_ASSISTANT) {
+                    assistant_mode_init(&assistant); /* fresh IDLE on entry */
+                }
                 if (mode == COPET_MODE_PHONE_BRIDGE && ble_available) {
                     const esp_err_t result = copet_ble_start();
                     if (result != ESP_OK) {
@@ -346,14 +440,41 @@ void app_main(void)
                 }
                 ESP_LOGI(TAG, "Sound setting: %s",
                          settings_mode_sound_label(&settings));
+            } else if (mode == COPET_MODE_ASSISTANT) {
+                if (assistant.state == ASSISTANT_IDLE) {
+                    const assistant_preset_t *preset =
+                        assistant_mode_submit(&assistant, (uint32_t)now_ms);
+                    if (preset != NULL) {
+                        play_audio_event(audio_available,
+                                         COPET_AUDIO_MENU_CONFIRM);
+                        const esp_err_t sent = assistant_service_submit(
+                            preset->type, preset->text);
+                        if (sent != ESP_OK) {
+                            assistant_mode_on_error(&assistant, "SERVICE BUSY",
+                                                    (uint32_t)now_ms);
+                        }
+                        ESP_LOGI(TAG, "Assistant query: %s", preset->label);
+                    }
+                } else {
+                    /* Tap dismisses a result/error (or cancels the wait). */
+                    assistant_mode_back(&assistant);
+                }
             }
+            } /* end: not a triple-tap */
             force_redraw = true;
         } else if (touch_event == TOUCH_BUTTON_EVENT_LONG) {
             ESP_LOGI(TAG, "TOUCH_LONG");
             desk_mode_on_activity(&desk, (uint32_t)now_ms);
             post_behavior(&behavior, COPET_BEHAVIOR_EVENT_USER_ACTIVITY,
                           0, (uint32_t)now_ms);
-            if (mode != COPET_MODE_DESK) {
+            if (mode == COPET_MODE_DESK) {
+                /* A held tap still counts toward the triple-tap clock gesture. */
+                if (register_clock_tap(&tap_count, &last_tap_ms, now_ms)) {
+                    announce_time_on_desk(&desk, audio_available,
+                                          (uint32_t)now_ms);
+                    ESP_LOGI(TAG, "Triple-tap: show time");
+                }
+            } else {
                 if (mode == COPET_MODE_PHONE_BRIDGE && ble_available) {
                     copet_ble_stop();
                 }
@@ -467,6 +588,68 @@ void app_main(void)
             }
         }
 
+#if CONFIG_COPET_ASSISTANT_ENABLED
+        /* Client-side timeout, then fold any new service answer into the mode. */
+        if (assistant_mode_tick(&assistant, (uint32_t)now_ms) &&
+            mode == COPET_MODE_ASSISTANT) {
+            redraw = true;
+        }
+        assistant_service_snapshot_t assistant_snapshot;
+        assistant_service_get_snapshot(&assistant_snapshot);
+        if (assistant_snapshot.revision != displayed_assistant_revision) {
+            displayed_assistant_revision = assistant_snapshot.revision;
+            if (assistant.state == ASSISTANT_WAITING) {
+                if (assistant_snapshot.status == ASSISTANT_SERVICE_READY &&
+                    assistant_snapshot.has_answer) {
+                    assistant_mode_on_answer(&assistant,
+                                             assistant_snapshot.text,
+                                             assistant_snapshot.mood,
+                                             (uint32_t)now_ms);
+                    if (audio_available) {
+                        /* Local skills speak real values from the vocabulary;
+                         * anything else gets the retro robot babble. */
+                        const assistant_preset_t *ap =
+                            assistant_mode_selected_preset(&assistant);
+                        speech_word_t words[SPEECH_MAX_WORDS];
+                        int spoken = 0;
+                        if (ap != NULL && strcmp(ap->type, "weather") == 0 &&
+                            weather.has_data) {
+                            const int temp = (int)(weather.temperature_c +
+                                (weather.temperature_c >= 0.0f ? 0.5f : -0.5f));
+                            spoken = copet_speech_weather(
+                                temp, weather.weather_code, words,
+                                SPEECH_MAX_WORDS);
+                        } else if (ap != NULL &&
+                                   strcmp(ap->type, "time") == 0) {
+                            const time_t t_now = time(NULL);
+                            struct tm local_time;
+                            localtime_r(&t_now, &local_time);
+                            if (local_time.tm_year + 1900 >= 2021) {
+                                spoken = copet_speech_time(
+                                    local_time.tm_hour, local_time.tm_min,
+                                    words, SPEECH_MAX_WORDS);
+                            }
+                        }
+                        if (spoken > 0) {
+                            copet_audio_say(words, spoken);
+                        } else {
+                            copet_audio_speak(
+                                count_words(assistant_snapshot.text));
+                        }
+                    }
+                } else if (assistant_snapshot.status ==
+                           ASSISTANT_SERVICE_ERROR) {
+                    assistant_mode_on_error(&assistant,
+                                            assistant_snapshot.text[0] != '\0'
+                                                ? assistant_snapshot.text
+                                                : "NO RESPONSE",
+                                            (uint32_t)now_ms);
+                }
+            }
+            if (mode == COPET_MODE_ASSISTANT) { redraw = true; }
+        }
+#endif
+
         const copet_ble_status_t ble_status =
             ble_available ? copet_ble_get_status() : COPET_BLE_ERROR;
         if (ble_status != displayed_ble_status) {
@@ -571,6 +754,15 @@ void app_main(void)
                 ESP_LOGI(TAG, "Focus preset: %s",
                          focus_mode_preset_label(&focus));
                 force_redraw = true;
+            } else if (real_step && mode == COPET_MODE_ASSISTANT &&
+                       assistant.state == ASSISTANT_IDLE) {
+                const int32_t logical_steps =
+                    encoder_position - displayed_encoder_position;
+                assistant_mode_scroll(&assistant, logical_steps);
+                play_audio_event(audio_available, COPET_AUDIO_MENU_MOVE);
+                ESP_LOGI(TAG, "Assistant preset: %s",
+                         assistant_mode_selected_preset(&assistant)->label);
+                force_redraw = true;
             }
             displayed_encoder_position = encoder_position;
             displayed_encoder_ab = encoder_ab;
@@ -643,7 +835,7 @@ void app_main(void)
 
         if (redraw || force_redraw) {
             render_active_mode(mode, &desk, &menu, &focus, &settings,
-                               behavior_view,
+                               &assistant, behavior_view,
                                wifi_service_status_label(wifi_status),
                                &weather, desk_environment, ble_status,
                                ble_message);

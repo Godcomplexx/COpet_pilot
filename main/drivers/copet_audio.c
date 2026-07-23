@@ -18,6 +18,9 @@ enum {
     AUDIO_SAMPLE_RATE = 16000,
     AUDIO_BUFFER_FRAMES = 128,
     AUDIO_OUTPUT_GAIN_PERCENT = 25,
+    /* The assistant's voice is louder than the UI blips: it is the thing you
+     * lean in to hear. Scaled below full scale, so still no clipping. */
+    AUDIO_SPEECH_GAIN_PERCENT = 100,
     /* INMP441 left-justifies 24 valid bits in a 32-bit slot. Shifting the raw
      * word right by this keeps the upper part of that 24-bit range: >>16 threw
      * away the lower 8 bits where quieter, at-a-distance music lives, so it
@@ -70,6 +73,49 @@ extern const uint8_t angry_grunt_start[]
 extern const uint8_t angry_grunt_end[]
     asm("_binary_angry_grunt_pcm_end");
 
+/* Concatenative speech vocabulary: one 8 kHz mono PCM clip per word, embedded
+ * from main/assets/speech/word_<name>.pcm (see tools/generate_speech.ps1). */
+#define WORD_CLIP(name)                                                       \
+    extern const uint8_t word_##name##_start[]                                \
+        asm("_binary_word_" #name "_pcm_start");                              \
+    extern const uint8_t word_##name##_end[]                                  \
+        asm("_binary_word_" #name "_pcm_end")
+
+WORD_CLIP(zero); WORD_CLIP(one); WORD_CLIP(two); WORD_CLIP(three);
+WORD_CLIP(four); WORD_CLIP(five); WORD_CLIP(six); WORD_CLIP(seven);
+WORD_CLIP(eight); WORD_CLIP(nine); WORD_CLIP(ten); WORD_CLIP(eleven);
+WORD_CLIP(twelve); WORD_CLIP(thirteen); WORD_CLIP(fourteen); WORD_CLIP(fifteen);
+WORD_CLIP(sixteen); WORD_CLIP(seventeen); WORD_CLIP(eighteen);
+WORD_CLIP(nineteen); WORD_CLIP(twenty); WORD_CLIP(thirty); WORD_CLIP(forty);
+WORD_CLIP(fifty); WORD_CLIP(degrees); WORD_CLIP(minus); WORD_CLIP(oh);
+WORD_CLIP(oclock); WORD_CLIP(clear); WORD_CLIP(cloudy); WORD_CLIP(fog);
+WORD_CLIP(rain); WORD_CLIP(snow); WORD_CLIP(storm);
+#undef WORD_CLIP
+
+#define WORD_ENTRY(id, name) [id] = {word_##name##_start, word_##name##_end, #name}
+static const audio_clip_t WORD_CLIPS[SPEECH_WORD_COUNT] = {
+    WORD_ENTRY(SPEECH_ZERO, zero), WORD_ENTRY(SPEECH_ONE, one),
+    WORD_ENTRY(SPEECH_TWO, two), WORD_ENTRY(SPEECH_THREE, three),
+    WORD_ENTRY(SPEECH_FOUR, four), WORD_ENTRY(SPEECH_FIVE, five),
+    WORD_ENTRY(SPEECH_SIX, six), WORD_ENTRY(SPEECH_SEVEN, seven),
+    WORD_ENTRY(SPEECH_EIGHT, eight), WORD_ENTRY(SPEECH_NINE, nine),
+    WORD_ENTRY(SPEECH_TEN, ten), WORD_ENTRY(SPEECH_ELEVEN, eleven),
+    WORD_ENTRY(SPEECH_TWELVE, twelve), WORD_ENTRY(SPEECH_THIRTEEN, thirteen),
+    WORD_ENTRY(SPEECH_FOURTEEN, fourteen), WORD_ENTRY(SPEECH_FIFTEEN, fifteen),
+    WORD_ENTRY(SPEECH_SIXTEEN, sixteen),
+    WORD_ENTRY(SPEECH_SEVENTEEN, seventeen),
+    WORD_ENTRY(SPEECH_EIGHTEEN, eighteen),
+    WORD_ENTRY(SPEECH_NINETEEN, nineteen), WORD_ENTRY(SPEECH_TWENTY, twenty),
+    WORD_ENTRY(SPEECH_THIRTY, thirty), WORD_ENTRY(SPEECH_FORTY, forty),
+    WORD_ENTRY(SPEECH_FIFTY, fifty), WORD_ENTRY(SPEECH_DEGREES, degrees),
+    WORD_ENTRY(SPEECH_MINUS, minus), WORD_ENTRY(SPEECH_OH, oh),
+    WORD_ENTRY(SPEECH_OCLOCK, oclock), WORD_ENTRY(SPEECH_CLEAR, clear),
+    WORD_ENTRY(SPEECH_CLOUDY, cloudy), WORD_ENTRY(SPEECH_FOG, fog),
+    WORD_ENTRY(SPEECH_RAIN, rain), WORD_ENTRY(SPEECH_SNOW, snow),
+    WORD_ENTRY(SPEECH_STORM, storm),
+};
+#undef WORD_ENTRY
+
 static const char *TAG = "copet_audio";
 static i2s_chan_handle_t s_tx_channel;
 static i2s_chan_handle_t s_rx_channel;
@@ -78,6 +124,9 @@ static volatile bool s_enabled = true;
 static volatile bool s_mic_active;
 static volatile uint8_t s_mic_level;
 static volatile uint8_t s_mic_zcr;
+static volatile uint32_t s_speak_syllables;
+static speech_word_t s_phrase[SPEECH_MAX_WORDS];
+static volatile int s_phrase_count;
 /* When the mic is active, TX is enabled once at init and left on so the shared
  * clock keeps running for the mic; audio_task must then not enable/disable it
  * per clip. */
@@ -139,6 +188,128 @@ static void write_silence(void)
                             &bytes_written, portMAX_DELAY);
 }
 
+/* Synthesize a short "robot voice": one pitched square-wave blip per syllable
+ * with a brief fade so it does not click. A stylized cue, not text-to-speech. */
+static void play_speech(int32_t *buffer)
+{
+    uint32_t syllables = s_speak_syllables;
+    if (syllables < 2U) { syllables = 2U; }
+    if (syllables > 12U) { syllables = 12U; }
+
+    if (!s_tx_always_on &&
+        i2s_channel_enable(s_tx_channel) != ESP_OK) {
+        return;
+    }
+
+    static const uint16_t tones[] = {294, 330, 392, 440, 494, 587};
+    const uint32_t tone_frames = AUDIO_SAMPLE_RATE / 10U;         /* 100 ms */
+    const uint32_t gap_frames = AUDIO_SAMPLE_RATE * 45U / 1000U;  /* 45 ms */
+    const uint32_t ramp = AUDIO_SAMPLE_RATE / 200U;              /* 5 ms fade */
+    uint32_t rng = 0x9E3779B9U ^ (syllables * 2654435761U);
+
+    for (uint32_t s = 0; s < syllables; ++s) {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        const uint32_t freq = tones[rng % (sizeof(tones) / sizeof(tones[0]))];
+        const uint32_t period = AUDIO_SAMPLE_RATE / freq;
+        uint32_t phase = 0;
+
+        for (uint32_t emitted = 0; emitted < tone_frames; ) {
+            const uint32_t chunk =
+                (tone_frames - emitted) < (uint32_t)AUDIO_BUFFER_FRAMES
+                    ? (tone_frames - emitted) : (uint32_t)AUDIO_BUFFER_FRAMES;
+            for (uint32_t f = 0; f < chunk; ++f) {
+                const uint32_t pos = emitted + f;
+                uint32_t env = ramp;
+                if (pos < ramp) { env = pos; }
+                else if (pos + ramp > tone_frames) { env = tone_frames - pos; }
+                const int32_t amp = (int32_t)(16000U * env / ramp);
+                const int16_t sample =
+                    (int16_t)(phase < period / 2U ? amp : -amp);
+                const int32_t wide = (int32_t)sample << 16;
+                buffer[f * 2] = wide;
+                buffer[f * 2 + 1] = wide;
+                if (++phase >= period) { phase = 0; }
+            }
+            size_t written = 0;
+            (void)i2s_channel_write(s_tx_channel, buffer,
+                                    chunk * 2U * sizeof(buffer[0]),
+                                    &written, portMAX_DELAY);
+            emitted += chunk;
+        }
+        for (uint32_t emitted = 0; emitted < gap_frames; ) {
+            const uint32_t chunk =
+                (gap_frames - emitted) < (uint32_t)AUDIO_BUFFER_FRAMES
+                    ? (gap_frames - emitted) : (uint32_t)AUDIO_BUFFER_FRAMES;
+            for (uint32_t f = 0; f < chunk * 2U; ++f) { buffer[f] = 0; }
+            size_t written = 0;
+            (void)i2s_channel_write(s_tx_channel, buffer,
+                                    chunk * 2U * sizeof(buffer[0]),
+                                    &written, portMAX_DELAY);
+            emitted += chunk;
+        }
+    }
+
+    write_silence();
+    vTaskDelay(pdMS_TO_TICKS(12));
+    if (!s_tx_always_on) {
+        (void)i2s_channel_disable(s_tx_channel);
+    }
+}
+
+/* Play one 16 kHz mono PCM word clip at the bus rate (mono duplicated to both
+ * channels), with the speech output gain. */
+static void play_pcm_clip(int32_t *buffer, const uint8_t *start,
+                          const uint8_t *end)
+{
+    if (start == NULL || end <= start) { return; }
+    const size_t samples = (size_t)(end - start) / sizeof(int16_t);
+    size_t out_frames = 0;
+    for (size_t i = 0; i < samples; ++i) {
+        const uint8_t *src = start + i * sizeof(int16_t);
+        const int16_t raw =
+            (int16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8));
+        const int16_t scaled =
+            (int16_t)(((int32_t)raw * AUDIO_SPEECH_GAIN_PERCENT) / 100);
+        const int32_t wide = (int32_t)scaled << 16;
+        buffer[out_frames * 2] = wide;
+        buffer[out_frames * 2 + 1] = wide;
+        if (++out_frames == (size_t)AUDIO_BUFFER_FRAMES) {
+            size_t written = 0;
+            (void)i2s_channel_write(s_tx_channel, buffer,
+                                    out_frames * 2U * sizeof(buffer[0]),
+                                    &written, portMAX_DELAY);
+            out_frames = 0;
+        }
+    }
+    if (out_frames > 0) {
+        size_t written = 0;
+        (void)i2s_channel_write(s_tx_channel, buffer,
+                                out_frames * 2U * sizeof(buffer[0]),
+                                &written, portMAX_DELAY);
+    }
+}
+
+/* Speak the queued phrase: each word's clip back to back. */
+static void play_phrase(int32_t *buffer)
+{
+    if (!s_tx_always_on &&
+        i2s_channel_enable(s_tx_channel) != ESP_OK) {
+        return;
+    }
+    for (int i = 0; i < s_phrase_count; ++i) {
+        const speech_word_t word = s_phrase[i];
+        if ((int)word >= 0 && word < SPEECH_WORD_COUNT) {
+            play_pcm_clip(buffer, WORD_CLIPS[word].start,
+                          WORD_CLIPS[word].end);
+        }
+    }
+    write_silence();
+    vTaskDelay(pdMS_TO_TICKS(12));
+    if (!s_tx_always_on) {
+        (void)i2s_channel_disable(s_tx_channel);
+    }
+}
+
 static void audio_task(void *argument)
 {
     (void)argument;
@@ -162,6 +333,15 @@ static void audio_task(void *argument)
             continue;
         }
         if (!s_enabled) {
+            continue;
+        }
+
+        if (event == COPET_AUDIO_ASSISTANT_SPEAK) {
+            play_speech(stereo_samples);
+            continue;
+        }
+        if (event == COPET_AUDIO_SAY_PHRASE) {
+            play_phrase(stereo_samples);
             continue;
         }
 
@@ -459,5 +639,46 @@ esp_err_t copet_audio_play_event(copet_audio_event_t event)
         return ESP_ERR_TIMEOUT;
     }
     ESP_LOGI(TAG, "Queued %s", clip.name);
+    return ESP_OK;
+}
+
+esp_err_t copet_audio_speak(uint32_t syllables)
+{
+    if (s_event_queue == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_enabled) {
+        return ESP_OK;
+    }
+    s_speak_syllables = syllables;
+    const copet_audio_event_t event = COPET_AUDIO_ASSISTANT_SPEAK;
+    if (xQueueSend(s_event_queue, &event, 0) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
+}
+
+esp_err_t copet_audio_say(const speech_word_t *words, int count)
+{
+    if (s_event_queue == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_enabled) {
+        return ESP_OK;
+    }
+    if (words == NULL || count <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (count > SPEECH_MAX_WORDS) {
+        count = SPEECH_MAX_WORDS;
+    }
+    for (int i = 0; i < count; ++i) {
+        s_phrase[i] = words[i];
+    }
+    s_phrase_count = count;
+    const copet_audio_event_t event = COPET_AUDIO_SAY_PHRASE;
+    if (xQueueSend(s_event_queue, &event, 0) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
     return ESP_OK;
 }

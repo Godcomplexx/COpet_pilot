@@ -10,6 +10,7 @@ enum {
     BORED_AFTER_MS = 30000,
     SMOKING_AFTER_MS = 90000,
     SLEEPY_AFTER_MS = 10 * 60 * 1000,
+    CLOCK_SHOW_MS = 6000, /* how long the triple-tap clock stays on the face */
     /* Idle life, ported from the upstream engine (engine.py): random glances on
      * a varied cadence rather than a fixed pattern, so a resting face never
      * loops. _IDLE_GAP=(1.5,5.0)s glances, _BLINK_GAP=(2.0,6.0)s blinks. */
@@ -262,9 +263,24 @@ static void select_expression(desk_mode_t *desk, uint32_t now_ms)
     desk->view.effect_elapsed_ms = now_ms - desk->vibe_started_ms;
 }
 
+void desk_mode_show_clock(desk_mode_t *desk, int hour, int minute,
+                          uint32_t now_ms)
+{
+    if (desk == NULL) { return; }
+    desk->view.clock_active = true;
+    desk->view.clock_hour = (int8_t)hour;
+    desk->view.clock_minute = (int8_t)minute;
+    desk->clock_until_ms = now_ms + CLOCK_SHOW_MS;
+    desk_mode_on_activity(desk, now_ms);
+}
+
 void desk_mode_update(desk_mode_t *desk, uint32_t now_ms)
 {
     if (desk == NULL) { return; }
+
+    if (desk->view.clock_active && time_reached(now_ms, desk->clock_until_ms)) {
+        desk->view.clock_active = false;
+    }
 
     desk->view.uptime_seconds = (now_ms - desk->started_ms) / 1000U;
     desk->view.inactivity_seconds = (now_ms - desk->last_activity_ms) / 1000U;
