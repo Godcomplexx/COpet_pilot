@@ -277,6 +277,11 @@ static esp_err_t ollama_query(const char *text, char *out_text,
     esp_err_t result = ESP_ERR_INVALID_RESPONSE;
     if (cJSON_IsString(answer) && answer->valuestring != NULL) {
         copy_bounded(out_text, out_text_cap, answer->valuestring);
+        /* The card font is uppercase ASCII; force case so a lowercase reply
+         * still renders. */
+        for (char *p = out_text; *p != '\0'; ++p) {
+            if (*p >= 'a' && *p <= 'z') { *p = (char)(*p - 32); }
+        }
         copy_bounded(out_mood, out_mood_cap, "helpful");
         result = ESP_OK;
     }
