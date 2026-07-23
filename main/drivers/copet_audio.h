@@ -36,7 +36,7 @@ esp_err_t copet_audio_speak(uint32_t syllables);
 
 /*
  * Speak a phrase built from the concatenative vocabulary (see copet_speech):
- * plays each word's embedded 8 kHz clip back to back, upsampled to the bus.
+ * plays each word's embedded 16 kHz clip back to back at the bus rate.
  * Real spoken words, assembled on-device. Returns immediately; respects the
  * sound on/off setting.
  */

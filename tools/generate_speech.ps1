@@ -1,8 +1,8 @@
 # Generates the concatenative speech vocabulary for CoPet's spoken time/weather.
 #
 # Uses the built-in Windows SAPI voice to render each word to WAV, then ffmpeg
-# to trim silence and convert to 8 kHz mono signed-16-bit little-endian PCM
-# (the format copet_audio plays, upsampled x2 to the 16 kHz I2S bus).
+# to trim silence and convert to 16 kHz mono signed-16-bit little-endian PCM
+# (the native rate copet_audio plays on the I2S bus).
 #
 # Output: main/assets/speech/word_*.pcm  (git-ignored; regenerate as needed).
 # Requires: Windows PowerShell (System.Speech) and ffmpeg on PATH.
@@ -30,8 +30,9 @@ $words = [ordered]@{
 }
 
 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$synth.Rate = 1        # a touch quicker so phrases do not drag
+$synth.Rate = -2       # slower = clearer consonants at 8 kHz
 $synth.Volume = 100
+try { $synth.SelectVoice("Microsoft Zira Desktop") } catch {}
 
 $count = 0
 foreach ($name in $words.Keys) {
@@ -41,11 +42,12 @@ foreach ($name in $words.Keys) {
     $synth.Speak($words[$name])
     $synth.SetOutputToNull()
 
-    # Trim near-silence, boost loudness with a limiter (louder without clipping),
-    # then 8 kHz / mono / s16le raw PCM.
+    # Trim near-silence, band-limit below the 8 kHz Nyquist, normalize loudness
+    # cleanly (loud but no hard-clip), and write 16 kHz / mono / s16le raw PCM.
+    # 16 kHz keeps the consonants (s/t/sh/f) that 8 kHz smears.
     & ffmpeg -y -loglevel error -i $wav `
-        -af "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.02:stop_periods=-1:stop_threshold=-45dB:stop_silence=0.05,volume=9dB,alimiter=level_in=1:level_out=1:limit=0.97" `
-        -ar 8000 -ac 1 -f s16le $pcm
+        -af "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.02:stop_periods=-1:stop_threshold=-45dB:stop_silence=0.05,lowpass=f=7200,dynaudnorm=p=0.9:m=10:g=7" `
+        -ar 16000 -ac 1 -f s16le $pcm
     if ($LASTEXITCODE -ne 0) { throw "ffmpeg failed for $name" }
     $count++
 }

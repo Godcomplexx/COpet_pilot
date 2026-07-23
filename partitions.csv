@@ -1,0 +1,7 @@
+# CoPet Pilot partition table for 4 MB flash.
+# A single large app partition (3 MB) leaves room for the embedded speech
+# vocabulary at a higher sample rate while keeping Wi-Fi + BLE in one image.
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x6000
+phy_init,   data, phy,     0xf000,   0x1000
+factory,    app,  factory, 0x10000,  0x300000

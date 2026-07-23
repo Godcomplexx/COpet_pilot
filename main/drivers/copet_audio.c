@@ -256,10 +256,10 @@ static void play_speech(int32_t *buffer)
     }
 }
 
-/* Play one 8 kHz mono PCM clip, upsampled x2 to the 16 kHz bus by repeating
- * each sample, with the shared output gain. */
-static void play_pcm_upsampled(int32_t *buffer, const uint8_t *start,
-                               const uint8_t *end)
+/* Play one 16 kHz mono PCM word clip at the bus rate (mono duplicated to both
+ * channels), with the speech output gain. */
+static void play_pcm_clip(int32_t *buffer, const uint8_t *start,
+                          const uint8_t *end)
 {
     if (start == NULL || end <= start) { return; }
     const size_t samples = (size_t)(end - start) / sizeof(int16_t);
@@ -271,17 +271,14 @@ static void play_pcm_upsampled(int32_t *buffer, const uint8_t *start,
         const int16_t scaled =
             (int16_t)(((int32_t)raw * AUDIO_SPEECH_GAIN_PERCENT) / 100);
         const int32_t wide = (int32_t)scaled << 16;
-        for (int rep = 0; rep < 2; ++rep) { /* 8 kHz -> 16 kHz */
-            buffer[out_frames * 2] = wide;
-            buffer[out_frames * 2 + 1] = wide;
-            if (++out_frames == (size_t)AUDIO_BUFFER_FRAMES) {
-                size_t written = 0;
-                (void)i2s_channel_write(
-                    s_tx_channel, buffer,
-                    out_frames * 2U * sizeof(buffer[0]), &written,
-                    portMAX_DELAY);
-                out_frames = 0;
-            }
+        buffer[out_frames * 2] = wide;
+        buffer[out_frames * 2 + 1] = wide;
+        if (++out_frames == (size_t)AUDIO_BUFFER_FRAMES) {
+            size_t written = 0;
+            (void)i2s_channel_write(s_tx_channel, buffer,
+                                    out_frames * 2U * sizeof(buffer[0]),
+                                    &written, portMAX_DELAY);
+            out_frames = 0;
         }
     }
     if (out_frames > 0) {
@@ -302,8 +299,8 @@ static void play_phrase(int32_t *buffer)
     for (int i = 0; i < s_phrase_count; ++i) {
         const speech_word_t word = s_phrase[i];
         if ((int)word >= 0 && word < SPEECH_WORD_COUNT) {
-            play_pcm_upsampled(buffer, WORD_CLIPS[word].start,
-                               WORD_CLIPS[word].end);
+            play_pcm_clip(buffer, WORD_CLIPS[word].start,
+                          WORD_CLIPS[word].end);
         }
     }
     write_silence();
