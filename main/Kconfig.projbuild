@@ -109,9 +109,31 @@ menu "CoPet Pilot"
         default y
         help
             Show the Assistant screen in the menu and start its background
-            service. The current backend is a local stub that returns canned
-            answers, so the whole flow (query -> card -> face reaction) works
-            with no cloud API or keys. A real HTTPS backend lands later
-            (see docs/27_assistant_m7_plan.md).
+            service. See docs/27_assistant_m7_plan.md.
+
+    choice COPET_ASSISTANT_BACKEND
+        prompt "Assistant backend"
+        depends on COPET_ASSISTANT_ENABLED
+        default COPET_ASSISTANT_BACKEND_STUB
+        help
+            Where assistant answers come from. The stub returns canned/local
+            answers with no network; HTTP calls a real CoPet Cloud endpoint.
+
+        config COPET_ASSISTANT_BACKEND_STUB
+            bool "Local stub (canned answers, no network)"
+
+        config COPET_ASSISTANT_BACKEND_HTTP
+            bool "HTTP /v1/query (real cloud API)"
+    endchoice
+
+    config COPET_ASSISTANT_ENDPOINT
+        string "Assistant API base URL"
+        depends on COPET_ASSISTANT_BACKEND_HTTP
+        default ""
+        help
+            Base URL of the CoPet Cloud API, e.g. https://your-host. The device
+            POSTs to <base>/v1/query per docs/architecture/cloud_api_contract.md.
+            No secret key is stored on the device; the backend holds provider
+            keys. Leave empty to fall back to the stub.
 
 endmenu

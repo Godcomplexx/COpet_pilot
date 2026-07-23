@@ -1,6 +1,7 @@
 #include "services/assistant_service.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -10,6 +11,12 @@
 #include "freertos/task.h"
 
 #include "services/weather_service.h"
+
+#if defined(CONFIG_COPET_ASSISTANT_BACKEND_HTTP)
+#include "cJSON.h"
+#include "esp_crt_bundle.h"
+#include "esp_http_client.h"
+#endif
 
 enum {
     ASSISTANT_TASK_STACK_SIZE = 3072,
@@ -30,6 +37,7 @@ static bool s_started;
 /* Pending request, guarded by s_mutex. */
 static bool s_have_request;
 static char s_req_type[ASSISTANT_TYPE_MAX];
+static char s_req_text[ASSISTANT_QUERY_MAX];
 static uint32_t s_req_id;
 
 static void copy_bounded(char *dst, size_t cap, const char *src)
@@ -96,6 +104,127 @@ static void stub_answer(const char *type, char *text, size_t text_cap,
     }
 }
 
+#if defined(CONFIG_COPET_ASSISTANT_BACKEND_HTTP)
+
+typedef struct {
+    char bytes[2048]; /* contract caps a response at 2 KB */
+    size_t length;
+    bool overflowed;
+} http_response_t;
+
+static esp_err_t http_event_handler(esp_http_client_event_t *event)
+{
+    if (event->event_id != HTTP_EVENT_ON_DATA || event->data_len <= 0) {
+        return ESP_OK;
+    }
+    http_response_t *response = event->user_data;
+    if (response == NULL) { return ESP_ERR_INVALID_ARG; }
+    const size_t free_bytes = sizeof(response->bytes) - 1U - response->length;
+    if ((size_t)event->data_len > free_bytes) {
+        response->overflowed = true;
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(response->bytes + response->length, event->data,
+           (size_t)event->data_len);
+    response->length += (size_t)event->data_len;
+    response->bytes[response->length] = '\0';
+    return ESP_OK;
+}
+
+/* Real backend: POST {endpoint}/v1/query and read {text, mood} from the reply
+ * (see docs/architecture/cloud_api_contract.md). Returns ESP_OK with the answer
+ * text filled, or an error on transport/parse failure. */
+static esp_err_t http_query(const char *type, const char *text,
+                            uint32_t request_id, char *out_text,
+                            size_t out_text_cap, char *out_mood,
+                            size_t out_mood_cap)
+{
+    char url[256];
+    const int url_len = snprintf(url, sizeof(url), "%s/v1/query",
+                                 CONFIG_COPET_ASSISTANT_ENDPOINT);
+    if (url_len < 0 || (size_t)url_len >= sizeof(url)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    cJSON *request = cJSON_CreateObject();
+    if (request == NULL) { return ESP_ERR_NO_MEM; }
+    char id_text[12];
+    snprintf(id_text, sizeof(id_text), "%u", (unsigned)request_id);
+    cJSON_AddStringToObject(request, "request_id", id_text);
+    cJSON_AddStringToObject(request, "type", type != NULL ? type : "query");
+    cJSON_AddStringToObject(request, "text", text != NULL ? text : "");
+    cJSON_AddStringToObject(request, "locale", "ru-RU");
+    cJSON_AddStringToObject(request, "timezone", CONFIG_COPET_TIMEZONE);
+    char *body = cJSON_PrintUnformatted(request);
+    cJSON_Delete(request);
+    if (body == NULL) { return ESP_ERR_NO_MEM; }
+
+    http_response_t response = {0};
+    const esp_http_client_config_t configuration = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .event_handler = http_event_handler,
+        .user_data = &response,
+        .timeout_ms = 10000, /* contract: 10 s for text */
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .buffer_size = 1024,
+        .buffer_size_tx = 1024,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&configuration);
+    if (client == NULL) { free(body); return ESP_ERR_NO_MEM; }
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, body, (int)strlen(body));
+
+    const esp_err_t perform_result = esp_http_client_perform(client);
+    const int status_code = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    free(body);
+
+    if (perform_result != ESP_OK) { return perform_result; }
+    if (status_code / 100 != 2 || response.length == 0 ||
+        response.overflowed) {
+        ESP_LOGW(TAG, "assistant HTTP status=%d bytes=%u", status_code,
+                 (unsigned)response.length);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    cJSON *root = cJSON_ParseWithLength(response.bytes, response.length);
+    if (root == NULL) { return ESP_ERR_INVALID_RESPONSE; }
+    cJSON *answer = cJSON_GetObjectItemCaseSensitive(root, "text");
+    cJSON *mood = cJSON_GetObjectItemCaseSensitive(root, "mood");
+    esp_err_t result = ESP_ERR_INVALID_RESPONSE;
+    if (cJSON_IsString(answer) && answer->valuestring != NULL) {
+        copy_bounded(out_text, out_text_cap, answer->valuestring);
+        copy_bounded(out_mood, out_mood_cap,
+                     cJSON_IsString(mood) && mood->valuestring != NULL
+                         ? mood->valuestring
+                         : "");
+        result = ESP_OK;
+    }
+    cJSON_Delete(root);
+    return result;
+}
+#endif /* CONFIG_COPET_ASSISTANT_BACKEND_HTTP */
+
+/* Produce an answer via the configured backend. Returns ESP_OK with out_text
+ * filled, or an error the caller surfaces as ASSISTANT_SERVICE_ERROR. */
+static esp_err_t answer_query(const char *type, const char *text,
+                             uint32_t request_id, char *out_text,
+                             size_t out_text_cap, char *out_mood,
+                             size_t out_mood_cap)
+{
+#if defined(CONFIG_COPET_ASSISTANT_BACKEND_HTTP)
+    if (strlen(CONFIG_COPET_ASSISTANT_ENDPOINT) > 0) {
+        return http_query(type, text, request_id, out_text, out_text_cap,
+                          out_mood, out_mood_cap);
+    }
+#endif
+    (void)text;
+    (void)request_id;
+    stub_answer(type, out_text, out_text_cap, out_mood, out_mood_cap);
+    return ESP_OK;
+}
+
 static void assistant_task(void *argument)
 {
     (void)argument;
@@ -103,6 +232,7 @@ static void assistant_task(void *argument)
         xSemaphoreTake(s_wake, portMAX_DELAY);
 
         char type[ASSISTANT_TYPE_MAX];
+        char query[ASSISTANT_QUERY_MAX];
         uint32_t request_id = 0;
         xSemaphoreTake(s_mutex, portMAX_DELAY);
         if (!s_have_request) {
@@ -111,27 +241,40 @@ static void assistant_task(void *argument)
         }
         s_have_request = false;
         copy_bounded(type, sizeof(type), s_req_type);
+        copy_bounded(query, sizeof(query), s_req_text);
         request_id = s_req_id;
         xSemaphoreGive(s_mutex);
 
-        ESP_LOGI(TAG, "query #%u type=%s (stub)", (unsigned)request_id, type);
+        ESP_LOGI(TAG, "query #%u type=%s", (unsigned)request_id, type);
 
-        /* Simulate the round-trip without blocking the UI task. */
+#if !defined(CONFIG_COPET_ASSISTANT_BACKEND_HTTP)
+        /* Stub: simulate a round-trip so the WAITING state is visible. */
         vTaskDelay(pdMS_TO_TICKS(ASSISTANT_STUB_DELAY_MS));
+#endif
 
         char text[sizeof(s_snapshot.text)];
         char mood[sizeof(s_snapshot.mood)];
-        stub_answer(type, text, sizeof(text), mood, sizeof(mood));
+        const esp_err_t result = answer_query(type, query, request_id, text,
+                                              sizeof(text), mood, sizeof(mood));
 
         xSemaphoreTake(s_mutex, portMAX_DELAY);
-        s_snapshot.status = ASSISTANT_SERVICE_READY;
-        s_snapshot.has_answer = true;
-        copy_bounded(s_snapshot.text, sizeof(s_snapshot.text), text);
-        copy_bounded(s_snapshot.mood, sizeof(s_snapshot.mood), mood);
+        if (result == ESP_OK) {
+            s_snapshot.status = ASSISTANT_SERVICE_READY;
+            s_snapshot.has_answer = true;
+            copy_bounded(s_snapshot.text, sizeof(s_snapshot.text), text);
+            copy_bounded(s_snapshot.mood, sizeof(s_snapshot.mood), mood);
+        } else {
+            s_snapshot.status = ASSISTANT_SERVICE_ERROR;
+            s_snapshot.has_answer = false;
+            copy_bounded(s_snapshot.text, sizeof(s_snapshot.text),
+                         "SERVICE UNAVAILABLE");
+            s_snapshot.mood[0] = '\0';
+        }
         s_snapshot.request_id = request_id;
         ++s_snapshot.revision;
         xSemaphoreGive(s_mutex);
-        ESP_LOGI(TAG, "answer #%u ready", (unsigned)request_id);
+        ESP_LOGI(TAG, "answer #%u %s", (unsigned)request_id,
+                 result == ESP_OK ? "ready" : "failed");
     }
 }
 
@@ -154,7 +297,6 @@ esp_err_t assistant_service_start(void)
 
 esp_err_t assistant_service_submit(const char *type, const char *text)
 {
-    (void)text; /* the stub answers from the type; a real backend sends text */
     if (!s_started) { return ESP_ERR_INVALID_STATE; }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -163,6 +305,7 @@ esp_err_t assistant_service_submit(const char *type, const char *text)
         return ESP_ERR_INVALID_STATE; /* one request at a time */
     }
     copy_bounded(s_req_type, sizeof(s_req_type), type);
+    copy_bounded(s_req_text, sizeof(s_req_text), text);
     s_req_id = s_snapshot.request_id + 1U;
     s_have_request = true;
     s_snapshot.status = ASSISTANT_SERVICE_FETCHING;

@@ -80,8 +80,10 @@ idf_component_register(
         esp_lcd
         esp_event
         esp_http_client
+        esp-tls
         esp_netif
         esp_timer
         esp_wifi
+        json
         nvs_flash
 )
