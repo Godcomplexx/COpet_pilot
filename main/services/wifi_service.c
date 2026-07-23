@@ -1,5 +1,7 @@
 #include "services/wifi_service.h"
+#include "services/copet_nvs.h"
 #include "services/wifi_credentials.h"
+#include "services/wifi_provisioning.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -51,6 +53,16 @@ static esp_err_t initialize_nvs(void)
 static void build_networks(void)
 {
     wifi_credentials_clear(&s_networks);
+    /* A network provisioned via the SoftAP portal (NVS) takes priority over the
+     * compile-time Kconfig networks. */
+    char ssid[WIFI_SSID_CAPACITY];
+    char password[WIFI_PASSWORD_CAPACITY];
+    if (copet_nvs_get_str("wifi_ssid", ssid, sizeof(ssid))) {
+        if (!copet_nvs_get_str("wifi_pass", password, sizeof(password))) {
+            password[0] = '\0';
+        }
+        wifi_credentials_add(&s_networks, ssid, password);
+    }
     wifi_credentials_add(&s_networks,
                          CONFIG_COPET_WIFI_SSID, CONFIG_COPET_WIFI_PASSWORD);
     wifi_credentials_add(&s_networks,
@@ -223,17 +235,9 @@ esp_err_t wifi_service_start(void)
     ESP_LOGI(TAG, "Wi-Fi disabled in menuconfig");
     return ESP_OK;
 #else
-    build_networks();
-    if (s_networks.count == 0) {
-        s_status = WIFI_SERVICE_NO_CREDENTIALS;
-        ESP_LOGW(TAG,
-                 "Wi-Fi is not configured; set CoPet Pilot > Wi-Fi SSID in menuconfig");
-        return ESP_OK;
-    }
-    s_multi = s_networks.count > 1;
-
     s_status = WIFI_SERVICE_STARTING;
     WIFI_RETURN_ON_ERROR(initialize_nvs(), "NVS initialization failed");
+    build_networks();
 
     esp_err_t result = esp_netif_init();
     if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) {
@@ -245,16 +249,30 @@ esp_err_t wifi_service_start(void)
         s_status = WIFI_SERVICE_ERROR;
         return result;
     }
-    if (esp_netif_create_default_wifi_sta() == NULL) {
-        s_status = WIFI_SERVICE_ERROR;
-        return ESP_ERR_NO_MEM;
-    }
 
     wifi_init_config_t initialization = WIFI_INIT_CONFIG_DEFAULT();
     WIFI_RETURN_ON_ERROR(esp_wifi_init(&initialization),
                          "Wi-Fi driver initialization failed");
     WIFI_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM),
                          "Wi-Fi RAM storage selection failed");
+
+    if (s_networks.count == 0) {
+        /* No known network: open the SoftAP setup portal (CoPet-Setup). */
+        s_status = WIFI_SERVICE_PROVISIONING;
+        const esp_err_t prov = wifi_provisioning_start();
+        if (prov != ESP_OK) {
+            s_status = WIFI_SERVICE_ERROR;
+            ESP_LOGE(TAG, "Wi-Fi provisioning failed: %s",
+                     esp_err_to_name(prov));
+        }
+        return prov;
+    }
+
+    s_multi = s_networks.count > 1;
+    if (esp_netif_create_default_wifi_sta() == NULL) {
+        s_status = WIFI_SERVICE_ERROR;
+        return ESP_ERR_NO_MEM;
+    }
 
     const esp_timer_create_args_t timer_configuration = {
         .callback = reconnect_timer_callback,
@@ -304,6 +322,7 @@ const char *wifi_service_status_label(wifi_service_status_t status)
 {
     switch (status) {
     case WIFI_SERVICE_NO_CREDENTIALS: return "WIFI SET";
+    case WIFI_SERVICE_PROVISIONING: return "WIFI SETUP";
     case WIFI_SERVICE_STARTING: return "WIFI INIT";
     case WIFI_SERVICE_CONNECTING: return "WIFI CONN";
     case WIFI_SERVICE_RETRY_WAIT: return "WIFI WAIT";

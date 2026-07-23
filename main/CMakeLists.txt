@@ -18,8 +18,10 @@ idf_component_register(
         "modes/menu_mode.c"
         "modes/settings_mode.c"
         "services/assistant_service.c"
+        "services/copet_nvs.c"
         "services/weather_service.c"
         "services/wifi_credentials.c"
+        "services/wifi_provisioning.c"
         "services/wifi_service.c"
         "ui/assistant_ui.c"
         "ui/boot_ui.c"
@@ -80,6 +82,7 @@ idf_component_register(
         esp_lcd
         esp_event
         esp_http_client
+        esp_http_server
         esp-tls
         esp_netif
         esp_timer

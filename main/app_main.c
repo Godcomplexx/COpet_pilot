@@ -27,6 +27,7 @@
 #include "modes/menu_mode.h"
 #include "modes/settings_mode.h"
 #include "services/assistant_service.h"
+#include "services/copet_nvs.h"
 #include "services/weather_service.h"
 #include "services/wifi_service.h"
 #include "ui/assistant_ui.h"
@@ -333,9 +334,15 @@ void app_main(void)
         (uint32_t)(esp_timer_get_time() / 1000);
     desk_mode_init(&desk, app_started_ms);
     copet_behavior_init(&behavior, app_started_ms, app_started_ms);
+    (void)copet_nvs_init();
     menu_mode_init(&menu);
     focus_mode_init(&focus);
-    settings_mode_init(&settings, true);
+    /* Restore the saved focus preset and sound setting from NVS. */
+    const uint8_t saved_preset = copet_nvs_get_u8("focus_preset", 0);
+    if (saved_preset > 0) {
+        focus_mode_select_preset(&focus, (int32_t)saved_preset);
+    }
+    settings_mode_init(&settings, copet_nvs_get_u8("sound", 1) != 0);
     assistant_mode_init(&assistant);
     if (audio_available) {
         copet_audio_set_enabled(settings.sound_enabled);
@@ -438,6 +445,7 @@ void app_main(void)
                 if (audio_available) {
                     copet_audio_set_enabled(enabled);
                 }
+                (void)copet_nvs_set_u8("sound", enabled ? 1U : 0U);
                 ESP_LOGI(TAG, "Sound setting: %s",
                          settings_mode_sound_label(&settings));
             } else if (mode == COPET_MODE_ASSISTANT) {
@@ -750,6 +758,7 @@ void app_main(void)
                 const int32_t logical_steps =
                     encoder_position - displayed_encoder_position;
                 focus_mode_select_preset(&focus, logical_steps);
+                (void)copet_nvs_set_u8("focus_preset", focus.preset);
                 play_audio_event(audio_available, COPET_AUDIO_MENU_MOVE);
                 ESP_LOGI(TAG, "Focus preset: %s",
                          focus_mode_preset_label(&focus));
