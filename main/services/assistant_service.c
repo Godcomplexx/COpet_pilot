@@ -21,7 +21,9 @@
 #endif
 
 enum {
-    ASSISTANT_TASK_STACK_SIZE = 3072,
+    /* Generous: the HTTP/Ollama backends run the http client + cJSON on this
+     * task's stack (and TLS for an https cloud endpoint). */
+    ASSISTANT_TASK_STACK_SIZE = 10240,
     ASSISTANT_STUB_DELAY_MS = 1200, /* fake "network" round-trip */
     ASSISTANT_TYPE_MAX = 16,
     ASSISTANT_QUERY_MAX = 128,
@@ -114,6 +116,9 @@ typedef struct {
     bool overflowed;
 } http_response_t;
 
+/* Kept off the task stack; only one request is ever in flight. */
+static http_response_t s_http_response;
+
 static esp_err_t http_event_handler(esp_http_client_event_t *event)
 {
     if (event->event_id != HTTP_EVENT_ON_DATA || event->data_len <= 0) {
@@ -162,12 +167,13 @@ static esp_err_t http_query(const char *type, const char *text,
     cJSON_Delete(request);
     if (body == NULL) { return ESP_ERR_NO_MEM; }
 
-    http_response_t response = {0};
+    http_response_t *response = &s_http_response;
+    memset(response, 0, sizeof(*response));
     const esp_http_client_config_t configuration = {
         .url = url,
         .method = HTTP_METHOD_POST,
         .event_handler = http_event_handler,
-        .user_data = &response,
+        .user_data = response,
         .timeout_ms = 10000, /* contract: 10 s for text */
         .crt_bundle_attach = esp_crt_bundle_attach,
         .buffer_size = 1024,
@@ -184,14 +190,14 @@ static esp_err_t http_query(const char *type, const char *text,
     free(body);
 
     if (perform_result != ESP_OK) { return perform_result; }
-    if (status_code / 100 != 2 || response.length == 0 ||
-        response.overflowed) {
+    if (status_code / 100 != 2 || response->length == 0 ||
+        response->overflowed) {
         ESP_LOGW(TAG, "assistant HTTP status=%d bytes=%u", status_code,
-                 (unsigned)response.length);
+                 (unsigned)response->length);
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    cJSON *root = cJSON_ParseWithLength(response.bytes, response.length);
+    cJSON *root = cJSON_ParseWithLength(response->bytes, response->length);
     if (root == NULL) { return ESP_ERR_INVALID_RESPONSE; }
     cJSON *answer = cJSON_GetObjectItemCaseSensitive(root, "text");
     cJSON *mood = cJSON_GetObjectItemCaseSensitive(root, "mood");
@@ -242,12 +248,13 @@ static esp_err_t ollama_query(const char *text, char *out_text,
     cJSON_Delete(request);
     if (body == NULL) { return ESP_ERR_NO_MEM; }
 
-    http_response_t response = {0};
+    http_response_t *response = &s_http_response;
+    memset(response, 0, sizeof(*response));
     const esp_http_client_config_t configuration = {
         .url = url,
         .method = HTTP_METHOD_POST,
         .event_handler = http_event_handler,
-        .user_data = &response,
+        .user_data = response,
         .timeout_ms = 30000, /* a local LLM can take a while to answer */
         .crt_bundle_attach = esp_crt_bundle_attach,
         .buffer_size = 1024,
@@ -264,14 +271,14 @@ static esp_err_t ollama_query(const char *text, char *out_text,
     free(body);
 
     if (perform_result != ESP_OK) { return perform_result; }
-    if (status_code / 100 != 2 || response.length == 0 ||
-        response.overflowed) {
+    if (status_code / 100 != 2 || response->length == 0 ||
+        response->overflowed) {
         ESP_LOGW(TAG, "ollama HTTP status=%d bytes=%u", status_code,
-                 (unsigned)response.length);
+                 (unsigned)response->length);
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    cJSON *root = cJSON_ParseWithLength(response.bytes, response.length);
+    cJSON *root = cJSON_ParseWithLength(response->bytes, response->length);
     if (root == NULL) { return ESP_ERR_INVALID_RESPONSE; }
     cJSON *answer = cJSON_GetObjectItemCaseSensitive(root, "response");
     esp_err_t result = ESP_ERR_INVALID_RESPONSE;
