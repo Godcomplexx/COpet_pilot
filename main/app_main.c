@@ -133,8 +133,6 @@ static bool register_clock_tap(int *tap_count, int64_t *last_tap_ms,
     } else {
         *tap_count = 1;
     }
-    ESP_LOGI(TAG, "tap %d (gap %lld ms)", *tap_count,
-             (long long)(now_ms - *last_tap_ms));
     *last_tap_ms = now_ms;
     if (*tap_count >= 3) {
         *tap_count = 0;
