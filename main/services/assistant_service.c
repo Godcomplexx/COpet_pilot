@@ -12,10 +12,12 @@
 
 #include "services/weather_service.h"
 
-#if defined(CONFIG_COPET_ASSISTANT_BACKEND_HTTP)
+#if defined(CONFIG_COPET_ASSISTANT_BACKEND_HTTP) || \
+    defined(CONFIG_COPET_ASSISTANT_BACKEND_OLLAMA)
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
+#define COPET_ASSISTANT_HAS_HTTP 1
 #endif
 
 enum {
@@ -104,7 +106,7 @@ static void stub_answer(const char *type, char *text, size_t text_cap,
     }
 }
 
-#if defined(CONFIG_COPET_ASSISTANT_BACKEND_HTTP)
+#if defined(COPET_ASSISTANT_HAS_HTTP)
 
 typedef struct {
     char bytes[2048]; /* contract caps a response at 2 KB */
@@ -131,6 +133,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *event)
     return ESP_OK;
 }
 
+#if defined(CONFIG_COPET_ASSISTANT_BACKEND_HTTP)
 /* Real backend: POST {endpoint}/v1/query and read {text, mood} from the reply
  * (see docs/architecture/cloud_api_contract.md). Returns ESP_OK with the answer
  * text filled, or an error on transport/parse failure. */
@@ -206,6 +209,83 @@ static esp_err_t http_query(const char *type, const char *text,
 }
 #endif /* CONFIG_COPET_ASSISTANT_BACKEND_HTTP */
 
+#if defined(CONFIG_COPET_ASSISTANT_BACKEND_OLLAMA)
+/* Local Ollama: POST {url}/api/generate and read the model's `response`. The
+ * system prompt keeps the reply short and ASCII so it renders on the card. */
+static esp_err_t ollama_query(const char *text, char *out_text,
+                              size_t out_text_cap, char *out_mood,
+                              size_t out_mood_cap)
+{
+    char url[256];
+    const int url_len = snprintf(url, sizeof(url), "%s/api/generate",
+                                 CONFIG_COPET_ASSISTANT_OLLAMA_URL);
+    if (url_len < 0 || (size_t)url_len >= sizeof(url)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    cJSON *request = cJSON_CreateObject();
+    if (request == NULL) { return ESP_ERR_NO_MEM; }
+    cJSON_AddStringToObject(request, "model",
+                            CONFIG_COPET_ASSISTANT_OLLAMA_MODEL);
+    cJSON_AddStringToObject(
+        request, "system",
+        "You are CoPet, a tiny desk robot. Reply with ONE short sentence, "
+        "UPPERCASE ENGLISH LETTERS AND DIGITS ONLY, at most 12 words.");
+    cJSON_AddStringToObject(request, "prompt", text != NULL ? text : "");
+    cJSON_AddBoolToObject(request, "stream", 0);
+    cJSON *options = cJSON_CreateObject();
+    if (options != NULL) {
+        cJSON_AddNumberToObject(options, "num_predict", 48);
+        cJSON_AddItemToObject(request, "options", options);
+    }
+    char *body = cJSON_PrintUnformatted(request);
+    cJSON_Delete(request);
+    if (body == NULL) { return ESP_ERR_NO_MEM; }
+
+    http_response_t response = {0};
+    const esp_http_client_config_t configuration = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .event_handler = http_event_handler,
+        .user_data = &response,
+        .timeout_ms = 30000, /* a local LLM can take a while to answer */
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .buffer_size = 1024,
+        .buffer_size_tx = 1024,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&configuration);
+    if (client == NULL) { free(body); return ESP_ERR_NO_MEM; }
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, body, (int)strlen(body));
+
+    const esp_err_t perform_result = esp_http_client_perform(client);
+    const int status_code = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    free(body);
+
+    if (perform_result != ESP_OK) { return perform_result; }
+    if (status_code / 100 != 2 || response.length == 0 ||
+        response.overflowed) {
+        ESP_LOGW(TAG, "ollama HTTP status=%d bytes=%u", status_code,
+                 (unsigned)response.length);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    cJSON *root = cJSON_ParseWithLength(response.bytes, response.length);
+    if (root == NULL) { return ESP_ERR_INVALID_RESPONSE; }
+    cJSON *answer = cJSON_GetObjectItemCaseSensitive(root, "response");
+    esp_err_t result = ESP_ERR_INVALID_RESPONSE;
+    if (cJSON_IsString(answer) && answer->valuestring != NULL) {
+        copy_bounded(out_text, out_text_cap, answer->valuestring);
+        copy_bounded(out_mood, out_mood_cap, "helpful");
+        result = ESP_OK;
+    }
+    cJSON_Delete(root);
+    return result;
+}
+#endif /* CONFIG_COPET_ASSISTANT_BACKEND_OLLAMA */
+#endif /* COPET_ASSISTANT_HAS_HTTP */
+
 /* Produce an answer via the configured backend. Returns ESP_OK with out_text
  * filled, or an error the caller surfaces as ASSISTANT_SERVICE_ERROR. */
 static esp_err_t answer_query(const char *type, const char *text,
@@ -217,6 +297,11 @@ static esp_err_t answer_query(const char *type, const char *text,
     if (strlen(CONFIG_COPET_ASSISTANT_ENDPOINT) > 0) {
         return http_query(type, text, request_id, out_text, out_text_cap,
                           out_mood, out_mood_cap);
+    }
+#elif defined(CONFIG_COPET_ASSISTANT_BACKEND_OLLAMA)
+    if (strlen(CONFIG_COPET_ASSISTANT_OLLAMA_URL) > 0) {
+        return ollama_query(text, out_text, out_text_cap, out_mood,
+                            out_mood_cap);
     }
 #endif
     (void)text;
