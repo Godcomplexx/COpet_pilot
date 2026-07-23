@@ -25,7 +25,7 @@ typedef enum {
 enum {
     ASSISTANT_TEXT_MAX = 192,   /* answer/error text shown on the card */
     ASSISTANT_MOOD_MAX = 16,    /* answer mood tag, e.g. "helpful" */
-    ASSISTANT_TIMEOUT_MS = 10000, /* contract: 10 s for a text query */
+    ASSISTANT_TIMEOUT_MS = 30000, /* generous: a local LLM can take a while */
 };
 
 typedef struct {

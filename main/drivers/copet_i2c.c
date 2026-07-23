@@ -21,7 +21,9 @@ esp_err_t copet_i2c_init(void)
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = true,
     };
-    return i2c_new_master_bus(&bus_config, &s_i2c_bus);
+    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_config, &s_i2c_bus), TAG,
+                        "I2C master bus init failed");
+    return ESP_OK;
 }
 
 i2c_master_bus_handle_t copet_i2c_bus(void)
