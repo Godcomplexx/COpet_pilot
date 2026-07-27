@@ -41,17 +41,21 @@ The prototype boots straight into **Desk Mode**, where the character:
 - shows indoor temperature and humidity;
 - switches between indoor and outdoor (Wi‑Fi) weather on a touch;
 - runs configurable focus sessions and keeps the timer when you leave;
-- reacts to nearby music through the microphone.
+- reacts to nearby music through the microphone;
+- speaks the time and weather aloud, and shows a clock on a triple‑tap.
 
 ---
 
 ## Demo
 
-<!-- Add the GIFs/photos listed in docs/media/README.md; paths are ready. -->
+![CoPet screen reel](docs/media/copet-demo.gif)
 
-| Desk Mode                              | Focus Mode                               | Hardware prototype                     |
-| -------------------------------------- | ---------------------------------------- | -------------------------------------- |
-| ![Desk Mode](docs/media/desk-mode.gif) | ![Focus Mode](docs/media/focus-mode.gif) | ![Prototype](docs/media/prototype.jpg) |
+Every screen in ~60 seconds — the procedural face and moods, the music‑reactive
+headphones, the focus timer, the triple‑tap clock and zen mode — rendered
+exactly as the firmware draws them (same 3×5 pixel font and Desk layout).
+[Full‑quality MP4 »](docs/media/copet-demo.mp4)
+
+![Hardware prototype](docs/media/prototype.jpg)
 
 Screen flow and wireframes: [screen storyboard](docs/ux/screen_storyboard.svg) ·
 [user flow](docs/ux/user_flow.svg).
@@ -141,7 +145,17 @@ cards between indoor readings and outdoor weather fetched directly over Wi‑Fi.
 
 Up to three networks can be configured. With two or more, the device scans the
 air on boot and on reconnect and joins the highest‑priority known network in
-range — so it works in several locations without reflashing.
+range — so it works in several locations without reflashing. First‑time setup
+runs a **SoftAP portal** (`CoPet-Setup`): enter the network in a browser and it
+is saved to NVS.
+
+### Assistant Mode
+
+Preset queries are answered on‑device: the **time and weather are spoken aloud**
+from an embedded concatenative voice, and a triple‑tap shows the clock on the
+face. Free‑form questions go to a pluggable backend — an offline stub, an HTTPS
+CoPet Cloud endpoint, or a local **Ollama** model — selected in Kconfig with no
+keys stored on the device.
 
 Also included:
 
@@ -169,7 +183,7 @@ Also included:
 | Connectivity | ESP32 Wi‑Fi / BLE      | RF        | Weather and diagnostics         |
 
 SD storage and Mini TV are planned after the base architecture stabilizes.
-GPS/GNSS and an outdoor mode are deferred to a later hardware revision. See the
+GPS/GNSS and an outdoor mode are out of scope for this project. See the
 [hardware map](docs/02_hardware_map.md) and [BOM](docs/06_bom_and_interfaces.md).
 
 ---
@@ -260,16 +274,17 @@ powershell -File test/host/run_tests.ps1
 
 **Working hardware prototype.** Implemented and validated: Desk Mode, Focus
 Mode, procedural face rendering, environment sensing, direct Wi‑Fi weather,
-behavior prioritization, audio with sound events, microphone listening, and a
-modular mode/UI architecture with host‑side tests.
+behavior prioritization, audio with sound events, microphone listening,
+Assistant Mode with spoken time/weather (stub / HTTP / Ollama backends), Wi‑Fi
+SoftAP provisioning + settings in NVS, and a modular mode/UI architecture with
+host‑side tests.
 
 ### Not yet implemented
 
-- Assistant mode;
-- Mini TV and SD‑based media playback;
-- persistent configuration and provisioning UI;
-- custom PCB and production enclosure;
-- GPS/GNSS and outdoor mode.
+- voice input (mic recording → cloud speech‑to‑text);
+- a deployed CoPet Cloud endpoint (the firmware client is ready);
+- Mini TV and SD‑based media playback (needs an SD card);
+- custom PCB and production enclosure.
 
 ---
 
@@ -334,12 +349,11 @@ device still runs and shows `WIFI SET`. Details:
 
 ## Roadmap
 
-**Next:** finish the enclosure revision, complete display‑driver separation, add
-SD storage, restore the gallery animation from SD assets, add persistent
-configuration, and document power consumption.
+**Next:** deploy (or point at) a real assistant endpoint — a CoPet Cloud
+`/v1/query` service or a local Ollama model — and document power consumption.
 
-**Later:** Assistant mode, Mini TV, a custom PCB, GPS/GNSS and an outdoor mode,
-and a lower‑power hardware revision.
+**Later:** voice input (mic → speech‑to‑text), Mini TV + SD‑based media, a
+custom PCB, and a lower‑power hardware revision.
 
 ---
 
