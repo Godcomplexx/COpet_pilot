@@ -11,7 +11,7 @@ phone app or cloud required.**
 ![Status](<https://img.shields.io/badge/status-working%20prototype-brightgreen>)
 ![Platform](https://img.shields.io/badge/platform-ESP32--WROOM--32-blue)
 ![Framework](<https://img.shields.io/badge/framework-ESP--IDF%205.5-red>)
-![Host tests](<https://img.shields.io/badge/host%20tests-316%20passing-brightgreen>)
+![Host tests](<https://img.shields.io/badge/host%20tests-322%20passing-brightgreen>)
 
 ![ESP32](https://img.shields.io/badge/ESP32-2ea44f?style=flat-square)
 ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-2ea44f?style=flat-square)
@@ -262,7 +262,7 @@ Hardware‑independent logic is tested on the development machine (no board):
 | `menu_mode` · `settings_mode` · `animation_mode` · `wifi_credentials` | Selection, toggles, timing, network matching                           |
 | `assistant_mode` · `assistant_ui` · `copet_speech`                      | Assistant flow (submit/timeout/back), card word‑wrap, number/time/weather speech |
 
-**Current result: 316 checks passing across 11 suites (70 behavior checks).**
+**Current result: 322 checks passing across 11 suites (70 behavior checks).**
 
 ```bash
 powershell -File test/host/run_tests.ps1

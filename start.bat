@@ -4,7 +4,7 @@ setlocal
 where idf.py >nul 2>nul
 if errorlevel 1 (
     echo ERROR: idf.py is not available.
-    echo Open "ESP-IDF 6.0 PowerShell" and run this file there.
+    echo Open the ESP-IDF PowerShell and run this file there.
     exit /b 1
 )
 

@@ -28,6 +28,17 @@ static void test_motion_classification(void)
           DESK_MOTION_FALLING);
 }
 
+static void test_comfort(void)
+{
+    CHECK(desk_mode_classify_comfort(false, 24.0f, 45.0f) ==
+          DESK_COMFORT_SENSOR_ERROR);
+    CHECK(desk_mode_classify_comfort(true, 17.9f, 45.0f) == DESK_COMFORT_COLD);
+    CHECK(desk_mode_classify_comfort(true, 24.0f, 29.9f) == DESK_COMFORT_DRY);
+    CHECK(desk_mode_classify_comfort(true, 24.0f, 45.0f) == DESK_COMFORT_COMFY);
+    CHECK(desk_mode_classify_comfort(true, 24.0f, 70.1f) == DESK_COMFORT_HUMID);
+    CHECK(desk_mode_classify_comfort(true, 33.0f, 45.0f) == DESK_COMFORT_HOT);
+}
+
 static void test_motion_labels(void)
 {
     CHECK_STR(desk_mode_motion_label(DESK_MOTION_NONE), "NONE");
@@ -82,6 +93,7 @@ static void test_idle_gaze_is_varied_and_bounded(void)
 
 int main(void)
 {
+    test_comfort();
     test_motion_classification();
     test_motion_labels();
     test_idle_gaze_is_varied_and_bounded();
