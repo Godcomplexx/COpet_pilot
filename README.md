@@ -13,7 +13,15 @@ phone app or cloud required.**
 ![Framework](<https://img.shields.io/badge/framework-ESP--IDF%205.5-red>)
 ![Host tests](<https://img.shields.io/badge/host%20tests-316%20passing-brightgreen>)
 
-`ESP32` · `ESP‑IDF` · `C` · `SPI` · `I²C` · `I²S` · `Wi‑Fi` · `BLE` · `Embedded UI`
+![ESP32](https://img.shields.io/badge/ESP32-2ea44f?style=flat-square)
+![ESP-IDF](https://img.shields.io/badge/ESP--IDF-2ea44f?style=flat-square)
+![C](https://img.shields.io/badge/C-2ea44f?style=flat-square)
+![SPI](https://img.shields.io/badge/SPI-2ea44f?style=flat-square)
+![I2C](https://img.shields.io/badge/I2C-2ea44f?style=flat-square)
+![I2S](https://img.shields.io/badge/I2S-2ea44f?style=flat-square)
+![Wi-Fi](https://img.shields.io/badge/Wi--Fi-2ea44f?style=flat-square)
+![BLE](https://img.shields.io/badge/BLE-2ea44f?style=flat-square)
+![Embedded UI](https://img.shields.io/badge/Embedded%20UI-2ea44f?style=flat-square)
 
 ---
 
