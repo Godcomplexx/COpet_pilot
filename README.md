@@ -1,5 +1,12 @@
 # CoPet Pilot
 
+> **Display replacement:** the current firmware targets a 1.77-inch ST7735/ST7735S
+> 128×160 SPI module. It scales the existing 240×240 UI to a centered 128×128
+> image, preserving proportions with 16-pixel black bars above and below.
+> Wiring, module settings and flashing instructions:
+> [ST7735 replacement guide](docs/29_st7735_display.md).
+> Photos and prototype descriptions below document the original ST7789 hardware.
+
 **An ESP32 desktop companion with a procedural animated face, environmental
 sensing, a focus timer, local behaviors, audio, and direct Wi‑Fi features — no
 phone app or cloud required.**

@@ -7,6 +7,7 @@ idf_component_register(
         "drivers/copet_audio.c"
         "drivers/copet_ble.c"
         "drivers/copet_display.c"
+        "drivers/display_pixels.c"
         "drivers/copet_encoder.c"
         "drivers/copet_i2c.c"
         "drivers/copet_sht31.c"

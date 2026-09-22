@@ -5,7 +5,7 @@
 | Component | Use | Interface | Priority |
 |---|---|---|---|
 | ESP32-WROOM-32 DevKit | main controller | core | P0 |
-| ST7789 240×240 TFT | UI/face | SPI | P0 |
+| ST7735 1.77-inch 128×160 TFT | UI/face; replaces ST7789 | SPI | P0 |
 | capacitive touch button | quick input | GPIO/touch | P0 |
 | mouse wheel / encoder | menu | GPIO | P0 |
 | SHT31 | room comfort | I2C | P0 |
@@ -19,7 +19,7 @@
 
 | Component | You learn |
 |---|---|
-| ST7789 | SPI, graphics, display buffers |
+| ST7735 | SPI, graphics, display buffers |
 | encoder | GPIO events, debounce |
 | SHT31 | I2C commands, sensor reads |
 | MPU6050 | registers, filtering, states |

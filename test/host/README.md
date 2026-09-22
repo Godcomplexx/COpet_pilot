@@ -8,6 +8,7 @@ Covered modules:
 
 | Module | Test | What is checked |
 |---|---|---|
+| `drivers/display_pixels.c` | `test_display_pixels.c` | RGB565 wire byte order, primary colors, all four frame corners, partial stripes and output buffer bounds |
 | `core/copet_behavior.c` | `test_copet_behavior.c` | P0–P3 priority, interruption, Focus/Wi‑Fi sources, shake escalation, cooldown, repeat history, cancel and timer wrap-around |
 | `modes/focus_mode.c` | `test_focus_mode.c` | ready/run/pause transitions, work→break→work, session count, remaining time preservation |
 | `modes/menu_mode.c` | `test_menu_mode.c` | item layout, selection wrap in both directions, multi-step scroll |

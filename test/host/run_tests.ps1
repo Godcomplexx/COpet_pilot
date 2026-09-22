@@ -19,6 +19,7 @@ New-Item -ItemType Directory -Force $out | Out-Null
 
 # suite name -> module sources it needs (relative to main/)
 $suites = @{
+    "test_display_pixels" = @("drivers\display_pixels.c")
     "test_copet_behavior"  = @("core\copet_behavior.c")
     "test_focus_mode"     = @("modes\focus_mode.c")
     "test_menu_mode"      = @("modes\menu_mode.c")

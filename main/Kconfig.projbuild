@@ -1,5 +1,44 @@
 menu "CoPet Pilot"
 
+    menu "ST7735 1.77-inch display"
+        config COPET_LCD_DIAGNOSTIC
+            bool "Show native panel test instead of starting CoPet"
+            default n
+            help
+                Show red, green and blue fills followed by a stationary
+                native 128x160 color-bar/grid pattern. Bypasses UI scaling.
+                Other peripherals and network services are not started.
+
+        config COPET_LCD_X_OFFSET
+            int "Column offset"
+            range 0 4
+            default 0
+            help
+                Green-tab 128x160 modules usually use X=2, Y=1.
+                Red/black-tab modules usually use X=0, Y=0.
+
+        config COPET_LCD_Y_OFFSET
+            int "Row offset"
+            range 0 2
+            default 0
+
+        config COPET_LCD_BGR
+            bool "BGR panel color order"
+            default y
+            help
+                Toggle if red and blue are swapped on the actual panel.
+
+        config COPET_LCD_INVERT
+            bool "Invert panel colors"
+            default n
+            help
+                Enable only if black and white appear inverted.
+
+        config COPET_LCD_FLIP
+            bool "Rotate portrait image by 180 degrees"
+            default n
+    endmenu
+
     config COPET_WIFI_ENABLED
         bool "Enable Wi-Fi Station"
         default y

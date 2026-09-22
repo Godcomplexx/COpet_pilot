@@ -233,6 +233,11 @@ void app_main(void)
     ESP_LOGI(TAG, "Board target: ESP32-WROOM-32");
 
     ESP_ERROR_CHECK(copet_display_init());
+#ifdef CONFIG_COPET_LCD_DIAGNOSTIC
+    ESP_ERROR_CHECK(copet_display_diagnostic());
+    ESP_LOGI(TAG, "LCD DIAGNOSTIC: static native pattern; normal services disabled");
+    return;
+#endif
     show_boot_progress(10, "DISPLAY READY", BOOT_STAGE_HOLD_MS);
     ESP_ERROR_CHECK(copet_i2c_init());
     ESP_ERROR_CHECK(copet_sht31_init(copet_i2c_bus()));

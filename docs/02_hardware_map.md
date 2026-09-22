@@ -5,7 +5,7 @@
 | Component | Role | Interface |
 |---|---|---|
 | ESP32-WROOM-32 DevKit | main controller | core |
-| ST7789 240×240 TFT | face/menu/video | SPI |
+| ST7735 1.77-inch 128×160 TFT | face/menu/video | SPI |
 | capacitive touch button | quick action | GPIO/touch |
 | mouse wheel / encoder | menu navigation | GPIO |
 | SHT31 | temp/humidity | I2C |
@@ -19,9 +19,10 @@
 
 ```text
 SPI bus:
-- ST7789 display
+- ST7735 display
 - SD card
-each with separate CS
+shared-bus plan requires separate CS lines; the current display driver
+uses a dedicated bus with CS tied to GND. Confirm the SD wiring first.
 
 I2C bus:
 - SHT31
@@ -42,6 +43,7 @@ GPIO:
 
 ## Notes
 
+- Exact GPIO assignments for every peripheral live in [03_pinout.md](03_pinout.md).
 - ESP32-WROOM-32 is the target board for the desktop product.
 - The active ESP32 DevKit prototype uses the display, SHT31, three-contact
   encoder, TTP223, and an IMU sold as MPU6050. Its chip reports
@@ -49,7 +51,7 @@ GPIO:
   both MPU6050 and MPU6500 identities.
 - Audio loopback is available through MAX98357A and INMP441 on shared I2S
   clocks. It is active only inside `AUDIO LOOPBACK`.
-- ST7789 is SPI, not I2C.
+- ST7735 is SPI, not I2C; the new module replaces the original ST7789.
 - SHT31 and MPU6050 can share I2C.
 - GPS antenna alone is not enough; a GNSS receiver module is required.
 - Speaker should not be connected directly to GPIO. Use amplifier.
